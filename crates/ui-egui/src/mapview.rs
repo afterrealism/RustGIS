@@ -166,8 +166,11 @@ impl MapView {
     pub fn set_render_state(&mut self, rs: Option<egui_wgpu::RenderState>) {
         self.render_state = rs;
     }
+    /// Forces a re-render on the next frame; also drops the GPU frame (the backend toggle
+    /// relies on it).
     pub fn invalidate(&mut self) {
         self.key = None;
+        self.gpu_frame = None;
     }
     /// How long the last map draw took, in milliseconds.
     pub fn render_ms(&self) -> u64 {

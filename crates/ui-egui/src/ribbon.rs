@@ -1441,6 +1441,18 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
         big(ui, app, "graticule", "Graticule", "Show latitude/longitude lines on the basemap.", "map.graticule", Value::Null, g, false);
         let dark = app.ui.dark;
         big(ui, app, "dark", "Dark\nMode", "Switch between light and dark themes.", "ui.theme", Value::Null, dark, false);
+        let gpu = app.map.gpu_enabled;
+        big(
+            ui,
+            app,
+            "map",
+            "GPU\nRendering",
+            "Draw the map on the GPU (beta; the globe, view effects and colour-vision simulation stay on the CPU renderer).",
+            "ui.map.gpu",
+            Value::Null,
+            gpu,
+            false,
+        );
     });
     group(ui, "View", |ui| {
         let on = app.session.map().projection.is_globe();
