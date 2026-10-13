@@ -4,17 +4,16 @@
 //! map units and the vertex shader displaces along lyon's unit normal by
 //! `stroke_px * map_per_px / 2`, so one tessellation serves every zoom.
 
-// Wired into `render_with_backend`'s Gpu arm in the next commit (Task 3); tests use them now.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use lyon::path::Path;
 use lyon::tessellation::{
     BuffersBuilder, FillOptions, FillRule, FillTessellator, LineCap, LineJoin, StrokeOptions, StrokeTessellator, VertexBuffers,
 };
-use rustgis_geom::Coord;
-use rustgis_map::{Rgba, Symbol};
+use rustgis_data::Geometry;
+use rustgis_geom::{Coord, Extent};
+use rustgis_map::{Layer, Rgba, Symbol};
 
-use crate::gpu_scene::{MeshVertex, PointInstance};
+use crate::SELECTION;
+use crate::gpu_scene::{DrawCmd, MeshVertex, PointInstance};
 
 /// Premultiplied 0..1 RGBA for the GPU (tiny-skia stores premultiplied; wgpu blends the same way).
 pub(crate) fn premul(c: Rgba) -> [f32; 4] {
@@ -184,6 +183,154 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
         _pad: 0.0,
     });
     out
+}
+
+fn extend_mesh(v: &mut Vec<MeshVertex>, i: &mut Vec<u32>, part: Option<(Vec<MeshVertex>, Vec<u32>)>) {
+    if let Some((pv, pi)) = part {
+        let base = v.len() as u32;
+        v.extend(pv);
+        i.extend(pi.into_iter().map(|x| x + base));
+    }
+}
+
+/// Appends one feature's GPU geometry, in the CPU path's per-feature order (fill, then
+/// outline — `Ctx::feature`). Transparent fills/strokes are skipped: tiny-skia draws them as
+/// no-ops, and not emitting them is identical output for less work.
+fn append_geometry(
+    v: &mut Vec<MeshVertex>,
+    i: &mut Vec<u32>,
+    pts: &mut Vec<PointInstance>,
+    g: &Geometry,
+    s: &Symbol,
+    origin: [f64; 2],
+    wireframe: bool,
+    ppp: f32,
+    map_per_px: f64,
+) {
+    match g {
+        Geometry::Point(c) => pts.extend(marker_instances(*c, origin, s, ppp, None)),
+        Geometry::MultiPoint(cs) => cs.iter().for_each(|c| pts.extend(marker_instances(*c, origin, s, ppp, None))),
+        Geometry::Line(parts) => {
+            if s.stroke.a() > 0 {
+                extend_mesh(v, i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px));
+            }
+        }
+        Geometry::Polygon(polys) if wireframe => {
+            extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke.with_alpha(255)), s.stroke_width.max(1.0) * ppp, map_per_px));
+        }
+        Geometry::Polygon(polys) => {
+            if s.fill.a() > 0 {
+                extend_mesh(v, i, fill_polygon(polys, origin, premul(s.fill), map_per_px));
+            }
+            if s.stroke_width > 0.0 && s.stroke.a() > 0 {
+                extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px));
+            }
+        }
+    }
+}
+
+/// Collects one GPU-eligible layer into Mesh/Points commands. `geoms`, `rows` and `visible`
+/// are the render loop's own (projected geometries, row filter, extent cull), so the GPU
+/// draws exactly the features the CPU would. Returns the layer's origin for
+/// [`collect_highlight`], `None` when nothing visible was collected.
+pub(crate) fn collect_layer(
+    cmds: &mut Vec<DrawCmd>,
+    layer: &Layer,
+    geoms: &[Option<&Geometry>],
+    rows: &[bool],
+    visible: &dyn Fn(&Extent) -> bool,
+    wireframe: bool,
+    ppp: f32,
+    map_per_px: f64,
+) -> Option<[f64; 2]> {
+    // Stable origin: the centre of the drawn features' extent. Two passes cost one extra
+    // extent fold — the same order of work as the culling pass the CPU render already does.
+    let mut ext = Extent::EMPTY;
+    for (row, g) in geoms.iter().enumerate() {
+        let Some(g) = g else { continue };
+        if rows.get(row) != Some(&true) || !visible(&g.extent()) {
+            continue;
+        }
+        ext = ext.union(&g.extent());
+    }
+    if ext.is_empty() {
+        return None;
+    }
+    let origin = [ext.center().x, ext.center().y];
+    let (mut v, mut i, mut pts) = (Vec::new(), Vec::new(), Vec::new());
+    for (row, g) in geoms.iter().enumerate() {
+        let Some(g) = g else { continue };
+        if rows.get(row) != Some(&true) || !visible(&g.extent()) {
+            continue;
+        }
+        append_geometry(&mut v, &mut i, &mut pts, g, &layer.symbol(row), origin, wireframe, ppp, map_per_px);
+    }
+    if !i.is_empty() {
+        cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+    }
+    if !pts.is_empty() {
+        cmds.push(DrawCmd::Points { origin, instances: pts });
+    }
+    Some(origin)
+}
+
+/// Selection highlight of one feature, after its layer (`Ctx::highlight`): haloed markers,
+/// a wider cyan under-stroke for lines, translucent cyan fill + outline for polygons.
+pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbol, ppp: f32, map_per_px: f64) {
+    let e = g.extent();
+    let origin = [e.center().x, e.center().y];
+    match g {
+        Geometry::Point(c) => cmds.push(DrawCmd::Points { origin, instances: marker_instances(*c, origin, s, ppp, Some(SELECTION)) }),
+        Geometry::MultiPoint(cs) => {
+            let instances: Vec<PointInstance> = cs.iter().flat_map(|c| marker_instances(*c, origin, s, ppp, Some(SELECTION))).collect();
+            cmds.push(DrawCmd::Points { origin, instances });
+        }
+        Geometry::Line(parts) => {
+            let (mut v, mut i) = (Vec::new(), Vec::new());
+            extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(SELECTION), (s.stroke_width + 3.0) * ppp, map_per_px));
+            extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px));
+            if !i.is_empty() {
+                cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+            }
+        }
+        Geometry::Polygon(polys) => {
+            let (mut v, mut i) = (Vec::new(), Vec::new());
+            extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(SELECTION.with_alpha(40)), map_per_px));
+            extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(SELECTION), 2.0 * ppp, map_per_px));
+            if !i.is_empty() {
+                cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+            }
+        }
+    }
+}
+
+/// The built-in basemap's land polygons (already in map units), fill plus optional outline.
+pub(crate) fn collect_basemap(
+    cmds: &mut Vec<DrawCmd>,
+    polys: &[Vec<Vec<Coord>>],
+    origin: [f64; 2],
+    land: Rgba,
+    outline: Rgba,
+    ppp: f32,
+    map_per_px: f64,
+) {
+    let (mut v, mut i) = (Vec::new(), Vec::new());
+    extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(land), map_per_px));
+    if outline.a() > 0 {
+        extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(outline), 0.6 * ppp, map_per_px));
+    }
+    if !i.is_empty() {
+        cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+    }
+}
+
+/// The graticule lines (already in map units).
+pub(crate) fn collect_graticule(cmds: &mut Vec<DrawCmd>, lines: &[Vec<Coord>], origin: [f64; 2], grat: Rgba, ppp: f32, map_per_px: f64) {
+    let (mut v, mut i) = (Vec::new(), Vec::new());
+    extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), 0.6 * ppp, map_per_px));
+    if !i.is_empty() {
+        cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
+    }
 }
 
 #[cfg(test)]

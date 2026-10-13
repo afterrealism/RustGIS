@@ -631,6 +631,19 @@ fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Ren
     }
 }
 
+/// Flushes the GPU pass's CPU accumulator pixmap as an Image draw command and resets it to
+/// transparent. Basemap, tiles, rasters and tiny-skia-only layers draw into the accumulator
+/// between GPU mesh commands, preserving the exact painter's-algorithm order.
+fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bool) -> Option<()> {
+    if *dirty {
+        let (w, h) = (pm.width(), pm.height());
+        cmds.push(gpu_scene::DrawCmd::Image { rgba: pm.data().to_vec(), size: [w, h] });
+        *pm = Pixmap::new(w, h)?;
+        *dirty = false;
+    }
+    Some(())
+}
+
 fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<Rendered2> {
     let (w, h) = view.pixel_size();
     let mut pm = Pixmap::new(w, h)?;
@@ -649,6 +662,19 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         globe,
     };
     let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
+    // The Gpu backend draws flat, effect-free frames; anything else stays on the CPU pixmap.
+    let gpu = matches!(backend, Backend::Gpu)
+        && globe.is_none()
+        && map.view.effects.is_none()
+        && map.view.color_vision == rustgis_map::view::ColorVision::Normal;
+    // The effective backend: the Gpu arm at the end only runs when the frame is compatible.
+    let backend = if gpu { Backend::Gpu } else { Backend::Cpu };
+    // GPU draw commands; between them, tiny-skia-only content accumulates in `pm` and is
+    // flushed as ordered Image commands (`flush_acc`, gated by `cpu_dirty`).
+    let mut cmds: Vec<gpu_scene::DrawCmd> = Vec::new();
+    // Map units per physical pixel: the decimation threshold scale (`Ctx::ring_path`'s 0.35 px
+    // rule is applied in screen space) and the stroke shader's width scale.
+    let map_per_px = view.camera.res / view.pixels_per_point;
     // On the globe nothing is culled by the flat extent: the horizon clips instead.
     let visible = |e: &Extent| match &globe {
         Some(g) => g.may_see(e),
@@ -661,6 +687,8 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         Some(g) => globe_backdrop(&mut pm, g, water, map.view.effects.stars, view.pixels_per_point as f32),
         None => pm.fill(tiny_skia::Color::from_rgba8(water.r(), water.g(), water.b(), 255)),
     }
+    // The water/globe backdrop fills the accumulator, so the first flush carries it.
+    let mut cpu_dirty = true;
     if land != water {
         let fill = paint(land, 1.0);
         let stroke = (outline.a() > 0).then(|| (paint(outline, 1.0), 0.6));
@@ -674,7 +702,13 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             if let Geometry::Polygon(polys) = g
                 && visible(&g.extent())
             {
-                ctx.polygon(&mut pm, polys, Some(fill.clone()), stroke.clone());
+                if gpu {
+                    flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
+                    let e = g.extent();
+                    mesh::collect_basemap(&mut cmds, polys, [e.center().x, e.center().y], land, outline, ctx.ppp, map_per_px);
+                } else {
+                    ctx.polygon(&mut pm, polys, Some(fill.clone()), stroke.clone());
+                }
             }
         }
     }
@@ -712,7 +746,20 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         } else {
             lines.into_iter().map(|l| l.into_iter().map(lonlat_to_merc).collect()).collect()
         };
-        ctx.line(&mut pm, &lines, &p, 0.6);
+        if gpu {
+            flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
+            let mut e = Extent::EMPTY;
+            for l in &lines {
+                for c in l {
+                    e.expand(*c);
+                }
+            }
+            if !e.is_empty() {
+                mesh::collect_graticule(&mut cmds, &lines, [e.center().x, e.center().y], grat, ctx.ppp, map_per_px);
+            }
+        } else {
+            ctx.line(&mut pm, &lines, &p, 0.6);
+        }
     }
 
     // Web tile layers, over the built-in basemap and its graticule.
@@ -721,6 +768,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         None => raster::Place::Flat(&flat, &key),
     };
     let tile_out = tiles::draw(&mut pm, map, view, tile_place, !map.label_display.paused && map.label_lock.is_none());
+    cpu_dirty |= !map.tiles.is_empty();
 
     // Layers, bottom first.
     let mut label_candidates: Vec<(PlacedLabel, f32, (u32, usize))> = Vec::new();
@@ -780,6 +828,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                 } else {
                     raster::draw(&mut pm, data, &rl.style, view, opacity, full_res_rasters, place);
                 }
+                cpu_dirty = true;
             }
             continue;
         }
@@ -813,7 +862,14 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         };
         let mut target = if offscreen { Pixmap::new(w, h)? } else { Pixmap::new(1, 1)? };
         let direct = !offscreen;
-        {
+        // GPU-eligible: a plain vector layer drawn at full opacity with no mask, blend,
+        // aggregation, extrusion or per-row graphics (an inert aggregation/extrusion on the
+        // "wrong" geometry type still falls back — conservative and correct).
+        let gpu_layer = gpu && !offscreen && layer.aggregation.is_none() && layer.extrusion.is_none() && !layer.graphics;
+        if gpu_layer {
+            flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
+            mesh::collect_layer(&mut cmds, layer, &geoms, &rows, &visible, ctx.wireframe, ctx.ppp, map_per_px);
+        } else {
             let dest = if direct { &mut pm } else { &mut target };
             let aggregate = layer.aggregation.filter(|_| layer.geometry_type() == GeometryType::Point);
             let extrude = layer.extrusion.as_ref().filter(|_| layer.geometry_type() == GeometryType::Polygon && globe.is_none());
@@ -843,6 +899,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                     ctx.feature(dest, g, &layer.symbol(row));
                 }
             }
+            cpu_dirty = true;
         }
         if !direct {
             composite(&mut pm, &target);
@@ -851,7 +908,12 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             if let Some(Some(g)) = geoms.get(*row)
                 && rows.get(*row) == Some(&true)
             {
-                ctx.highlight(&mut pm, g, &layer.symbol(*row));
+                if gpu_layer {
+                    mesh::collect_highlight(&mut cmds, g, &layer.symbol(*row), ctx.ppp, map_per_px);
+                } else {
+                    ctx.highlight(&mut pm, g, &layer.symbol(*row));
+                    cpu_dirty = true;
+                }
             }
         }
         if layer.graphics {
@@ -949,6 +1011,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
     for l in &placed.labels {
         if let Some(icon) = &l.icon {
             draw_icon(&mut pm, icon, view.pixels_per_point as f32);
+            cpu_dirty = true;
         }
     }
     // Effects, and (on screen only) the colour vision simulation.
@@ -972,17 +1035,10 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         Backend::Cpu => {
             Some(Rendered2::Cpu(Rendered { pixmap: pm, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors }))
         }
-        // Task 1 scaffold: everything drew into the CPU pixmap; the scene is that one image.
-        // Task 3 moves eligible vector layers out of the pixmap into tessellated meshes.
-        Backend::Gpu => Some(Rendered2::Gpu(gpu_scene::GpuScene {
-            cmds: vec![gpu_scene::DrawCmd::Image { rgba: pm.data().to_vec(), size: [pm.width(), pm.height()] }],
-            labels,
-            unplaced,
-            attribution,
-            tiles_pending,
-            data_pending,
-            tile_errors,
-        })),
+        Backend::Gpu => {
+            flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
+            Some(Rendered2::Gpu(gpu_scene::GpuScene { cmds, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors }))
+        }
     }
 }
 
@@ -1633,5 +1689,95 @@ mod tests {
         assert_eq!(r.pixmap.data().len(), 800 * 500 * 4);
         let h = fnv1a(r.pixmap.data());
         assert_eq!(h, 0x8caa_2097_9bae_31b7, "golden pixmap hash changed: {h:#x}");
+    }
+
+    fn square_layer(m: &mut Map, name: &str, x: f64, y: f64, s: f64) -> u32 {
+        let mut d = Dataset::new(name, GeometryType::Polygon, vec![]);
+        d.push(
+            Some(Geometry::Polygon(vec![vec![vec![
+                Coord::new(x, y),
+                Coord::new(x + s, y),
+                Coord::new(x + s, y + s),
+                Coord::new(x, y + s),
+            ]]])),
+            vec![],
+        );
+        m.add_dataset(d)
+    }
+
+    fn cmd_kinds(scene: &gpu_scene::GpuScene) -> Vec<&'static str> {
+        scene
+            .cmds
+            .iter()
+            .map(|c| match c {
+                gpu_scene::DrawCmd::Mesh { .. } => "mesh",
+                gpu_scene::DrawCmd::Points { .. } => "points",
+                gpu_scene::DrawCmd::Image { .. } => "image",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gpu_backend_builds_scene_for_flat_world() {
+        let mut m = sample_world();
+        if let Some(l) = m.layers.iter_mut().find(|l| l.name == "Cities") {
+            l.labels.enabled = true;
+        }
+        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let kinds = cmd_kinds(&scene);
+        assert!(kinds.iter().filter(|k| **k == "mesh").count() >= 2, "countries/lakes/rivers as meshes: {kinds:?}");
+        assert!(kinds.contains(&"points"), "cities as marker instances: {kinds:?}");
+        // The label channel is identical to the CPU render's.
+        let mut m2 = sample_world();
+        if let Some(l) = m2.layers.iter_mut().find(|l| l.name == "Cities") {
+            l.labels.enabled = true;
+        }
+        let cpu = render(&mut m2, &view).expect("cpu");
+        assert_eq!(scene.labels.len(), cpu.labels.len());
+        assert_eq!(scene.labels.first().map(|l| l.text.as_str()), cpu.labels.first().map(|l| l.text.as_str()));
+    }
+
+    #[test]
+    fn gpu_backend_interleaves_cpu_image_for_blended_layer() {
+        let mut m = Map::new("Map");
+        // Layers draw bottom-up: the last one in the list first.
+        square_layer(&mut m, "a", 0.0, 0.0, 10.0);
+        let b = square_layer(&mut m, "b", 20.0, 0.0, 10.0);
+        square_layer(&mut m, "c", 40.0, 0.0, 10.0);
+        if let Some(l) = m.layer_mut(b) {
+            l.blend = rustgis_map::effects::Blend::Multiply;
+        }
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let kinds = cmd_kinds(&scene);
+        let last_image = kinds.iter().rposition(|k| *k == "image").expect("the blended layer's cpu image");
+        assert!(kinds[..last_image].contains(&"mesh"), "a mesh below the blended layer: {kinds:?}");
+        assert!(kinds[last_image + 1..].contains(&"mesh"), "a mesh above the blended layer: {kinds:?}");
+    }
+
+    #[test]
+    fn gpu_backend_appends_selection_highlight() {
+        let mut m = Map::new("Map");
+        let id = square_layer(&mut m, "s", 0.0, 0.0, 10.0);
+        if let Some(l) = m.layer_mut(id) {
+            l.selection = vec![0];
+        }
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let kinds = cmd_kinds(&scene);
+        assert_eq!(kinds.last(), Some(&"mesh"), "the highlight mesh follows the layer: {kinds:?}");
+        assert!(kinds.iter().filter(|k| **k == "mesh").count() >= 2, "layer mesh + highlight mesh: {kinds:?}");
+    }
+
+    #[test]
+    fn gpu_backend_falls_back_for_globe_and_effects() {
+        let mut m = sample_world();
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        m.projection = rustgis_map::Projection::Globe;
+        assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(Rendered2::Cpu(_))), "globe stays on the CPU renderer");
+        m.projection = rustgis_map::Projection::WebMercator;
+        m.view.effects.vignette = true;
+        assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(Rendered2::Cpu(_))), "view effects stay on the CPU renderer");
     }
 }
