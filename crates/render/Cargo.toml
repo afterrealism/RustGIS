@@ -13,6 +13,7 @@ rustgis-geom = { workspace = true }
 rustgis-data = { workspace = true }
 rustgis-map = { workspace = true }
 tiny-skia = { workspace = true }
+bytemuck = { workspace = true }
 ab_glyph = { workspace = true }
 epaint_default_fonts = { workspace = true }
 log = { workspace = true }

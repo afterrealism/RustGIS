@@ -8,6 +8,7 @@
 
 mod effects;
 pub mod fonts;
+pub mod gpu_scene;
 pub mod layout;
 pub mod logo;
 pub mod pdf;
@@ -186,6 +187,30 @@ pub struct Rendered {
     pub data_pending: bool,
     /// Tile layers that couldn't be drawn, and why.
     pub tile_errors: Vec<String>,
+}
+
+/// Which rasteriser [`render_backend`] targets: the tiny-skia CPU pixmap (the default, and the
+/// only path for exports, the globe and effect-heavy frames) or a lyon-tessellated GPU scene
+/// drawn by the UI inside egui's wgpu pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    Cpu,
+    Gpu,
+}
+
+/// A finished render in either backend.
+pub enum Rendered2 {
+    Cpu(Rendered),
+    Gpu(gpu_scene::GpuScene),
+}
+
+/// Renders the map for the screen in the chosen backend. `Backend::Cpu` is exactly
+/// [`render`]; `Backend::Gpu` draws what it can as tessellated meshes and everything else
+/// (basemap, tiles, rasters, masked/blended/transparent layers) as CPU-rasterized images in
+/// the same z-order.
+pub fn render_backend(map: &mut Map, view: &View, backend: Backend) -> Option<Rendered2> {
+    render_with_backend(map, view, false, backend)
 }
 
 /// Decodes PNG bytes into a pixmap.
@@ -598,6 +623,14 @@ pub fn render(map: &mut Map, view: &View) -> Option<Rendered> {
 }
 
 fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Rendered> {
+    match render_with_backend(map, view, full_res_rasters, Backend::Cpu) {
+        Some(Rendered2::Cpu(r)) => Some(r),
+        // The Cpu backend never produces Rendered2::Gpu.
+        Some(Rendered2::Gpu(_)) | None => None,
+    }
+}
+
+fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<Rendered2> {
     let (w, h) = view.pixel_size();
     let mut pm = Pixmap::new(w, h)?;
     // Streamed layers read the view: in the background for the screen, in place for an export
@@ -930,15 +963,26 @@ fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Ren
         };
         post::apply(&mut pm, &map.view.effects, vision, &lonlat);
     }
-    Some(Rendered {
-        pixmap: pm,
-        labels: placed.labels,
-        unplaced,
-        attribution: tile_out.attribution,
-        tiles_pending: tile_out.pending,
-        data_pending,
-        tile_errors: tile_out.errors,
-    })
+    let labels = placed.labels;
+    let attribution = tile_out.attribution;
+    let tiles_pending = tile_out.pending;
+    let tile_errors = tile_out.errors;
+    match backend {
+        Backend::Cpu => {
+            Some(Rendered2::Cpu(Rendered { pixmap: pm, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors }))
+        }
+        // Task 1 scaffold: everything drew into the CPU pixmap; the scene is that one image.
+        // Task 3 moves eligible vector layers out of the pixmap into tessellated meshes.
+        Backend::Gpu => Some(Rendered2::Gpu(gpu_scene::GpuScene {
+            cmds: vec![gpu_scene::DrawCmd::Image { rgba: pm.data().to_vec(), size: [pm.width(), pm.height()] }],
+            labels,
+            unplaced,
+            attribution,
+            tiles_pending,
+            data_pending,
+            tile_errors,
+        })),
+    }
 }
 
 /// Draws an icon, scaled to its size in logical points.
@@ -1552,5 +1596,41 @@ mod tests {
             let view = View { width: w, height: h, pixels_per_point: 1.0, camera: Camera::world() };
             let _ = render(&mut m, &view);
         }
+    }
+
+    /// The world sample the golden pixmap test renders.
+    fn sample_world() -> Map {
+        let mut m = Map::new("Map");
+        for (name, text) in [
+            ("Countries", sample_data::COUNTRIES),
+            ("Rivers", sample_data::RIVERS),
+            ("Lakes", sample_data::LAKES),
+            ("Cities", sample_data::CITIES),
+        ] {
+            if let Some(d) = world_dataset(name, text) {
+                m.add_dataset(d);
+            }
+        }
+        m
+    }
+
+    fn fnv1a(data: &[u8]) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for b in data {
+            h = (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    /// Golden hash of the sample world render: the GPU-backend refactor (Backend/Dest
+    /// plumbing) must not change a single pixel of the CPU path.
+    #[test]
+    fn world_atlas_pixmap_is_byte_stable() {
+        let mut m = sample_world();
+        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let r = render(&mut m, &view).expect("render");
+        assert_eq!(r.pixmap.data().len(), 800 * 500 * 4);
+        let h = fnv1a(r.pixmap.data());
+        assert_eq!(h, 0x8caa_2097_9bae_31b7, "golden pixmap hash changed: {h:#x}");
     }
 }

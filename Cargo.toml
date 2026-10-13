@@ -38,6 +38,8 @@ geo = "0.33"
 shapefile = "0.9"
 csv = "1"
 tiny-skia = "0.12"
+# GPU map backend: vertex data shared with wgpu in ui-egui (derive only; unsafe stays forbidden).
+bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2"
 # Rasters: GeoTIFF decoding/encoding, and coordinate systems by EPSG code (pure Rust, except the
