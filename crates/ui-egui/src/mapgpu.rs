@@ -628,8 +628,19 @@ mod tests {
 
     /// A headless wgpu render state (the egui_kittest recipe). `None` on hosts without any
     /// adapter — CI without a GPU skips these tests.
+    /// A headless wgpu render state (the egui_kittest recipe). `None` on hosts without any
+    /// adapter — CI without a GPU skips these tests. `backends` defaults to all; the web app
+    /// is GL-forced (`apps/rustgis-web`), so the suite also runs the world sample over GL.
     fn headless_render_state() -> Option<RenderState> {
-        let setup = egui_wgpu::WgpuSetup::CreateNew(egui_wgpu::WgpuSetupCreateNew::without_display_handle());
+        headless_render_state_on(wgpu::Backends::all())
+    }
+
+    fn headless_render_state_on(backends: wgpu::Backends) -> Option<RenderState> {
+        let setup = egui_wgpu::WgpuSetup::CreateNew({
+            let mut s = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+            s.instance_descriptor.backends = backends;
+            s
+        });
         let instance = pollster::block_on(setup.new_instance());
         pollster::block_on(egui_wgpu::RenderState::create(
             &egui_wgpu::WgpuConfiguration { wgpu_setup: setup, ..Default::default() },
@@ -680,8 +691,8 @@ mod tests {
 
     /// Renders the GpuScene into an offscreen texture and reads it back (premultiplied RGBA,
     /// the same bytes the CPU pixmap holds). `None` on hosts without a GPU adapter.
-    fn gpu_render_offscreen(map: &mut Map, view: &View) -> Option<Vec<u8>> {
-        let rs = headless_render_state()?;
+    fn gpu_render_offscreen_on(map: &mut Map, view: &View, backends: wgpu::Backends) -> Option<Vec<u8>> {
+        let rs = headless_render_state_on(backends)?;
         let r = GpuMapRenderer::new(&rs);
         let Some(Rendered2::Gpu(scene)) = render::render_backend(map, view, Backend::Gpu) else { panic!("gpu-compatible scene") };
         let bufs = SceneBuffers::from_scene(
@@ -789,8 +800,12 @@ mod tests {
     }
 
     fn assert_parity(name: &str, build: impl Fn() -> Map, view: &View) {
+        assert_parity_on(name, build, view, wgpu::Backends::all());
+    }
+
+    fn assert_parity_on(name: &str, build: impl Fn() -> Map, view: &View, backends: wgpu::Backends) {
         let mut gm = build();
-        let Some(gpu) = gpu_render_offscreen(&mut gm, view) else { return }; // no adapter: skip
+        let Some(gpu) = gpu_render_offscreen_on(&mut gm, view, backends) else { return }; // no adapter: skip
         let mut cm = build();
         let cpu = render::render(&mut cm, view).expect("cpu render");
         // PARITY_DUMP=/tmp/dir writes {name}-{cpu,gpu,diff}.png for eyeballing failures.
@@ -836,6 +851,12 @@ mod tests {
     #[test]
     fn parity_world_sample() {
         assert_parity("world sample", world_map, &world_view());
+    }
+
+    #[test]
+    fn parity_world_sample_gl() {
+        // The web build forces wgpu's GL backend (WebGL2): same scene, GL adapter.
+        assert_parity_on("world sample (GL)", world_map, &world_view(), wgpu::Backends::GL);
     }
 
     #[test]
