@@ -1684,7 +1684,7 @@ mod tests {
     #[test]
     fn world_atlas_pixmap_is_byte_stable() {
         let mut m = sample_world();
-        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world() };
         let r = render(&mut m, &view).expect("render");
         assert_eq!(r.pixmap.data().len(), 800 * 500 * 4);
         let h = fnv1a(r.pixmap.data());
@@ -1723,7 +1723,7 @@ mod tests {
         if let Some(l) = m.layers.iter_mut().find(|l| l.name == "Cities") {
             l.labels.enabled = true;
         }
-        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world() };
         let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         let kinds = cmd_kinds(&scene);
         assert!(kinds.iter().filter(|k| **k == "mesh").count() >= 2, "countries/lakes/rivers as meshes: {kinds:?}");
@@ -1748,7 +1748,7 @@ mod tests {
         if let Some(l) = m.layer_mut(b) {
             l.blend = rustgis_map::effects::Blend::Multiply;
         }
-        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
         let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         let kinds = cmd_kinds(&scene);
         let last_image = kinds.iter().rposition(|k| *k == "image").expect("the blended layer's cpu image");
@@ -1763,7 +1763,7 @@ mod tests {
         if let Some(l) = m.layer_mut(id) {
             l.selection = vec![0];
         }
-        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
         let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         let kinds = cmd_kinds(&scene);
         assert_eq!(kinds.last(), Some(&"mesh"), "the highlight mesh follows the layer: {kinds:?}");
@@ -1773,7 +1773,7 @@ mod tests {
     #[test]
     fn gpu_backend_falls_back_for_globe_and_effects() {
         let mut m = sample_world();
-        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
         m.projection = rustgis_map::Projection::Globe;
         assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(Rendered2::Cpu(_))), "globe stays on the CPU renderer");
         m.projection = rustgis_map::Projection::WebMercator;

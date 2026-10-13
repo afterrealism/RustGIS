@@ -4246,11 +4246,14 @@ name = "rustgis-ui-egui"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "bytemuck",
  "egui",
+ "egui-wgpu",
  "egui_extras",
  "egui_kittest",
  "image",
  "log",
+ "pollster 0.4.0",
  "rfd",
  "rustgis-assistant",
  "rustgis-engine",

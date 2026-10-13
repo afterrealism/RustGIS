@@ -82,6 +82,7 @@ ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 # ui
 egui = "0.36"
+egui-wgpu = "0.36"
 egui_extras = { version = "0.36", default-features = false }
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"

@@ -446,6 +446,12 @@ pub struct RustGisApp {
 }
 
 impl RustGisApp {
+    /// egui's wgpu render state from the host (`frame.wgpu_render_state()`), feeding the GPU
+    /// map backend. Cheap to call every frame: the state is Arc-backed.
+    pub fn set_render_state(&mut self, rs: Option<egui_wgpu::RenderState>) {
+        self.map.set_render_state(rs);
+    }
+
     pub fn new(session: Session) -> Self {
         let mut s = session;
         if s.active_layer.is_none() {

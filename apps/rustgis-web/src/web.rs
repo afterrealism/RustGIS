@@ -335,7 +335,9 @@ impl Embed {
 }
 
 impl eframe::App for WebShell {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The GPU map backend draws inside egui's wgpu pass; hand over the render state.
+        self.app.set_render_state(frame.wgpu_render_state().cloned());
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         for f in dropped {
             let (inbox, notes) = (self.inbox.clone(), self.notes.clone());

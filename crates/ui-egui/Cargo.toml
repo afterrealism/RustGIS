@@ -12,6 +12,9 @@ workspace = true
 rustgis-engine = { workspace = true }
 rustgis-assistant = { workspace = true }
 egui = { workspace = true }
+# The GPU map backend draws inside egui's own wgpu render pass.
+egui-wgpu = { workspace = true }
+bytemuck = { workspace = true }
 egui_extras = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,3 +34,4 @@ rfd = { workspace = true }
 rustgis-plugins = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 image = { workspace = true }
+pollster = "0.4"

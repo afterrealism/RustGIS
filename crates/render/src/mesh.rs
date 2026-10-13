@@ -155,33 +155,21 @@ pub(crate) fn stroke_lines(
     stroke(parts, origin, color, width_px.max(0.5), map_per_px, false, 2)
 }
 
-/// One marker (two when there's a halo: the halo is a larger filled shape drawn first,
-/// matching the CPU's 3.5 px halo stroke drawn under the fill — `Ctx::marker`).
+/// One marker as instances of a unit-space shape template: the selection halo first (a
+/// larger filled shape, matching the CPU's 3.5 px halo stroke drawn under the fill), then the
+/// outline (a larger fill in the stroke colour — the outer half of a centered stroke shows),
+/// then the fill itself (`Ctx::marker`).
 pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32, halo: Option<Rgba>) -> Vec<PointInstance> {
     let r = (s.size.max(1.0) * ppp) / 2.0;
     let shape = s.marker as u32;
-    let mut out = Vec::with_capacity(2);
+    let mut out = Vec::with_capacity(3);
     if let Some(h) = halo {
-        out.push(PointInstance {
-            position: rel(c, origin),
-            color: premul(h),
-            stroke: [0.0; 4],
-            radius_px: r + 1.75 * ppp,
-            stroke_px: 0.0,
-            shape,
-            _pad: 0.0,
-        });
+        out.push(PointInstance { position: rel(c, origin), color: premul(h), radius_px: r + 1.75 * ppp, shape });
     }
-    let stroke_px = if s.stroke_width > 0.0 && s.stroke.a() > 0 { s.stroke_width * ppp } else { 0.0 };
-    out.push(PointInstance {
-        position: rel(c, origin),
-        color: premul(s.fill),
-        stroke: premul(s.stroke),
-        radius_px: r,
-        stroke_px,
-        shape,
-        _pad: 0.0,
-    });
+    if s.stroke_width > 0.0 && s.stroke.a() > 0 {
+        out.push(PointInstance { position: rel(c, origin), color: premul(s.stroke), radius_px: r + s.stroke_width * ppp / 2.0, shape });
+    }
+    out.push(PointInstance { position: rel(c, origin), color: premul(s.fill), radius_px: r, shape });
     out
 }
 
@@ -405,17 +393,20 @@ mod tests {
     }
 
     #[test]
-    fn marker_halo_emits_two_instances() {
+    fn marker_halo_and_stroke_emit_under_instances() {
         let s =
             Symbol { fill: Rgba::rgb(255, 0, 0), stroke: Rgba::rgb(255, 255, 255), stroke_width: 1.0, size: 8.0, marker: Marker::Circle };
-        let two = marker_instances(Coord::new(5.0, 5.0), [5.0, 5.0], &s, 2.0, Some(Rgba::rgb(0, 255, 255)));
-        assert_eq!(two.len(), 2);
-        assert_eq!(two[0].radius_px, 8.0 + 3.5, "halo = r + 1.75*ppp"); // r = 8*2/2 = 8
-        assert_eq!(two[0].stroke_px, 0.0);
-        assert_eq!(two[1].radius_px, 8.0);
-        assert_eq!(two[1].stroke_px, 2.0);
-        let one = marker_instances(Coord::new(5.0, 5.0), [5.0, 5.0], &s, 2.0, None);
-        assert_eq!(one.len(), 1);
+        let three = marker_instances(Coord::new(5.0, 5.0), [5.0, 5.0], &s, 2.0, Some(Rgba::rgb(0, 255, 255)));
+        assert_eq!(three.len(), 3, "halo + stroke + fill");
+        assert_eq!(three[0].radius_px, 8.0 + 3.5, "halo = r + 1.75*ppp"); // r = 8*2/2 = 8
+        assert_eq!(three[1].radius_px, 9.0, "stroke under-fill at r + stroke_px/2");
+        assert_eq!(three[2].radius_px, 8.0);
+        // Painter's order: halo, stroke, fill.
+        assert_eq!(three[0].color, premul(Rgba::rgb(0, 255, 255)));
+        assert_eq!(three[1].color, premul(Rgba::rgb(255, 255, 255)));
+        assert_eq!(three[2].color, premul(Rgba::rgb(255, 0, 0)));
+        let one = marker_instances(Coord::new(5.0, 5.0), [5.0, 5.0], &Symbol { stroke_width: 0.0, ..s }, 2.0, None);
+        assert_eq!(one.len(), 1, "fill only");
     }
 
     #[test]

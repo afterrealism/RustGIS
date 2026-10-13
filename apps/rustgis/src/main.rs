@@ -149,7 +149,9 @@ mod crash {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The GPU map backend draws inside egui's wgpu pass; hand over the render state.
+        self.0.set_render_state(frame.wgpu_render_state().cloned());
         #[cfg(target_os = "macos")]
         {
             let titlebar = macos::titlebar();

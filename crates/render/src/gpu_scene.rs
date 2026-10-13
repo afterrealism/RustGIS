@@ -52,22 +52,19 @@ pub struct MeshVertex {
     pub _pad: f32,
 }
 
-/// One marker instance: world position plus everything the marker shader needs to draw the
-/// shape at screen size (markers are sized in points, not map units).
+/// One marker draw: an instance of a unit-space shape template scaled to `radius_px` screen
+/// pixels by the vertex shader. A CPU marker with an outline becomes two instances (stroke
+/// under, fill over; the outer half of a centered stroke is what shows) and a selection halo
+/// is a third, largest, first — painter's order within the layer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PointInstance {
     /// Origin-relative map units.
     pub position: [f32; 2],
-    /// Fill, premultiplied 0..1.
+    /// Premultiplied 0..1.
     pub color: [f32; 4],
-    /// Outline, premultiplied 0..1 (alpha 0 = no stroke).
-    pub stroke: [f32; 4],
     /// Shape radius in physical pixels.
     pub radius_px: f32,
-    /// Outline width in physical pixels.
-    pub stroke_px: f32,
     /// `rustgis_map::Marker` as u32 (0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Star).
     pub shape: u32,
-    pub _pad: f32,
 }

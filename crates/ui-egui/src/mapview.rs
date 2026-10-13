@@ -109,6 +109,13 @@ pub struct MapView {
     drape: crate::globe_drape::GlobeDrape,
     /// Shooting stars around the globe.
     comets: crate::comets::Comets,
+    /// GPU map backend: pipelines (built lazily from the render state), the uploaded scene,
+    /// and egui's wgpu render state handed over by the host app.
+    pub(crate) gpu_renderer: Option<std::sync::Arc<crate::mapgpu::GpuMapRenderer>>,
+    pub(crate) gpu_frame: Option<std::sync::Arc<crate::mapgpu::SceneBuffers>>,
+    pub(crate) render_state: Option<egui_wgpu::RenderState>,
+    /// The GPU map backend, for now gated on the RUSTGIS_GPU environment variable.
+    pub gpu_enabled: bool,
 }
 
 impl Default for MapView {
@@ -142,11 +149,20 @@ impl Default for MapView {
             last_render: -10.0,
             drape: Default::default(),
             comets: Default::default(),
+            gpu_renderer: None,
+            gpu_frame: None,
+            render_state: None,
+            gpu_enabled: std::env::var_os("RUSTGIS_GPU").is_some(),
         }
     }
 }
 
 impl MapView {
+    /// egui's wgpu render state from the host (`frame.wgpu_render_state()`), for the GPU map
+    /// backend. Cheap to call every frame: the state is Arc-backed and pipelines build lazily.
+    pub fn set_render_state(&mut self, rs: Option<egui_wgpu::RenderState>) {
+        self.render_state = rs;
+    }
     pub fn invalidate(&mut self) {
         self.key = None;
     }
@@ -341,28 +357,83 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     if globe_view && !moving && app.map.key.is_some_and(|k| k.draft) {
         ui.ctx().request_repaint();
     }
+    // The GPU backend draws flat, effect-free frames; it re-renders on every change (no
+    // texture-shift trick — meshes re-project in the vertex shader).
+    let gpu_ok = app.map.gpu_enabled
+        && !globe_view
+        && app.session.map().view.effects.is_none()
+        && app.session.map().view.color_vision == rustgis_engine::map::view::ColorVision::Normal;
+    // GPU fast path: during pan/zoom with an all-GPU scene (no CPU image runs — rasters and
+    // tiles don't re-project), only the camera changes, so rewrite the per-draw uniforms
+    // instead of re-tessellating. `tex_camera` stays behind on purpose: labels hide while
+    // zooming and shift while panning, as on the CPU path.
     let stale = app.map.key != Some(key);
-    if stale && (!interacting || app.map.texture.is_none() || app.map.key.is_some_and(|k| k.rev != key.rev || k.size != key.size)) {
+    let cam_only = app.map.key.is_some_and(|k| (Key { cam: k.cam, ..key }) == k);
+    if stale
+        && gpu_ok
+        && interacting
+        && cam_only
+        && let (Some(gf), Some(rs)) = (&app.map.gpu_frame, &app.map.render_state)
+        && !gf.has_images
+    {
+        gf.set_camera(&rs.queue, &cam);
+        app.map.key = Some(key);
+    }
+    let stale = app.map.key != Some(key);
+    if stale && (gpu_ok || !interacting || app.map.texture.is_none() || app.map.key.is_some_and(|k| k.rev != key.rev || k.size != key.size))
+    {
         let t0 = web_time::Instant::now();
         let view = View { width: w, height: h, pixels_per_point: render_ppp as f64, camera: cam };
-        if let Some(r) = rustgis_engine::render::render(app.session.map_mut(), &view) {
-            let size = [r.pixmap.width() as usize, r.pixmap.height() as usize];
-            let img = egui::ColorImage::from_rgba_premultiplied(size, r.pixmap.data());
-            match &mut app.map.texture {
-                Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
-                None => app.map.texture = Some(ui.ctx().load_texture("map", img, egui::TextureOptions::LINEAR)),
+        let mut rendered_gpu = false;
+        if gpu_ok {
+            if app.map.gpu_renderer.is_none()
+                && let Some(rs) = &app.map.render_state
+            {
+                app.map.gpu_renderer = Some(std::sync::Arc::new(crate::mapgpu::GpuMapRenderer::new(rs)));
             }
-            app.map.labels = r.labels;
-            app.map.labels.splice(0..0, r.unplaced);
-            app.map.attribution = r.attribution;
-            app.map.last_render = time;
-            for e in r.tile_errors {
-                if app.map.tile_errors.insert(e.clone()) {
-                    app.session.notify(e, true);
+            if let (Some(r), Some(rs)) = (&app.map.gpu_renderer, &app.map.render_state)
+                && let Some(rustgis_engine::render::Rendered2::Gpu(scene)) =
+                    rustgis_engine::render::render_backend(app.session.map_mut(), &view, rustgis_engine::render::Backend::Gpu)
+            {
+                let bufs = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, cam, [w, h], render_ppp);
+                app.map.gpu_frame = Some(std::sync::Arc::new(bufs));
+                app.map.labels = scene.labels;
+                app.map.labels.splice(0..0, scene.unplaced);
+                app.map.attribution = scene.attribution;
+                app.map.last_render = time;
+                for e in scene.tile_errors {
+                    if app.map.tile_errors.insert(e.clone()) {
+                        app.session.notify(e, true);
+                    }
                 }
+                app.map.tex_camera = cam;
+                app.map.key = Some(key);
+                rendered_gpu = true;
             }
-            app.map.tex_camera = cam;
-            app.map.key = Some(key);
+        }
+        // The CPU path, unchanged — also the fallback when the GPU backend declines a frame
+        // (render_backend's own compatibility guard) or no render state arrived yet.
+        if !rendered_gpu {
+            app.map.gpu_frame = None;
+            if let Some(r) = rustgis_engine::render::render(app.session.map_mut(), &view) {
+                let size = [r.pixmap.width() as usize, r.pixmap.height() as usize];
+                let img = egui::ColorImage::from_rgba_premultiplied(size, r.pixmap.data());
+                match &mut app.map.texture {
+                    Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+                    None => app.map.texture = Some(ui.ctx().load_texture("map", img, egui::TextureOptions::LINEAR)),
+                }
+                app.map.labels = r.labels;
+                app.map.labels.splice(0..0, r.unplaced);
+                app.map.attribution = r.attribution;
+                app.map.last_render = time;
+                for e in r.tile_errors {
+                    if app.map.tile_errors.insert(e.clone()) {
+                        app.session.notify(e, true);
+                    }
+                }
+                app.map.tex_camera = cam;
+                app.map.key = Some(key);
+            }
         }
         app.map.render_ms = t0.elapsed().as_millis() as u64;
         if app.map.camera_moved {
@@ -402,7 +473,13 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     } else {
         Rect::from_min_max(to_screen(&cam, e0.min_x, e0.max_y), to_screen(&cam, e0.max_x, e0.min_y))
     };
-    if let Some(tex) = app.map.texture.as_ref().filter(|_| !draped) {
+    // A fresh GPU frame (re-rendered whenever the key changed, so its camera is the current
+    // one: tex_rect == rect and labels sit unshifted) draws inside egui's wgpu pass. The GPU
+    // backend only serves flat maps, so the globe's drape never meets it.
+    if let (Some(gf), Some(gr)) = (&app.map.gpu_frame, &app.map.gpu_renderer) {
+        painter
+            .add(egui_wgpu::Callback::new_paint_callback(rect, crate::mapgpu::SceneCallback { renderer: gr.clone(), buffers: gf.clone() }));
+    } else if let Some(tex) = app.map.texture.as_ref().filter(|_| !draped) {
         painter.image(tex.id(), tex_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     // Shooting stars, while space shows around the globe.
