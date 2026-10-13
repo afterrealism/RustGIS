@@ -40,6 +40,8 @@ csv = "1"
 tiny-skia = "0.12"
 # GPU map backend: vertex data shared with wgpu in ui-egui (derive only; unsafe stays forbidden).
 bytemuck = { version = "1", features = ["derive"] }
+# GPU map backend: polygon/line tessellation for the GPU scene (same major as SpatialOS's 1.x).
+lyon = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ab_glyph = "0.2"
 # Rasters: GeoTIFF decoding/encoding, and coordinate systems by EPSG code (pure Rust, except the

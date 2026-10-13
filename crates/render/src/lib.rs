@@ -11,6 +11,7 @@ pub mod fonts;
 pub mod gpu_scene;
 pub mod layout;
 pub mod logo;
+mod mesh;
 pub mod pdf;
 mod picture;
 pub mod post;
