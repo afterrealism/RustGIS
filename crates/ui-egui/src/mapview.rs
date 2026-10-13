@@ -115,6 +115,11 @@ pub struct MapView {
     pub(crate) gpu_frame: Option<std::sync::Arc<crate::mapgpu::SceneBuffers>>,
     /// The GPU scene's offscreen MSAA target, shared with the paint callback across frames.
     pub(crate) gpu_target: std::sync::Arc<std::sync::Mutex<Option<crate::mapgpu::SceneTarget>>>,
+    /// The last side-by-side map's GPU scene (its key, buffers and labels), when the second
+    /// map rendered on the GPU.
+    pub(crate) split_gpu: Option<([f64; 8], std::sync::Arc<crate::mapgpu::SceneBuffers>, Vec<PlacedLabel>)>,
+    /// The split map's offscreen MSAA target (its own slot — main and split differ in size).
+    pub(crate) gpu_target_split: std::sync::Arc<std::sync::Mutex<Option<crate::mapgpu::SceneTarget>>>,
     pub(crate) render_state: Option<egui_wgpu::RenderState>,
     /// The GPU map backend, for now gated on the RUSTGIS_GPU environment variable.
     pub gpu_enabled: bool,
@@ -154,6 +159,8 @@ impl Default for MapView {
             gpu_renderer: None,
             gpu_frame: None,
             gpu_target: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            split_gpu: None,
+            gpu_target_split: std::sync::Arc::new(std::sync::Mutex::new(None)),
             render_state: None,
             gpu_enabled: std::env::var_os("RUSTGIS_GPU").is_some(),
         }
@@ -251,19 +258,54 @@ fn split_view(app: &mut RustGisApp, ui: &mut Ui, other: usize, rect: Rect, t: &T
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, c32(m.basemap.palette().0));
     let key = [other as f64, revision as f64, m.camera.center.x, m.camera.center.y, m.camera.res, w, h, f64::from(ppp)];
-    if app.map.split.as_ref().is_none_or(|(k, _, _)| *k != key)
-        && let Some(r) = rustgis_engine::render::render(m, &view)
-    {
-        let img = egui::ColorImage::from_rgba_premultiplied([r.pixmap.width() as usize, r.pixmap.height() as usize], r.pixmap.data());
-        match app.map.split.take() {
-            Some((_, mut tex, _)) => {
-                tex.set(img, egui::TextureOptions::LINEAR);
-                app.map.split = Some((key, tex, r.labels));
-            }
-            None => app.map.split = Some((key, ui.ctx().load_texture("split_map", img, egui::TextureOptions::LINEAR), r.labels)),
+    let gpu_ok = app.map.gpu_enabled
+        && !m.projection.is_globe()
+        && m.view.effects.is_none()
+        && m.view.color_vision == rustgis_engine::map::view::ColorVision::Normal;
+    // Fresh GPU scene? Keep it. Stale? Rebuild. Either way `rendered_gpu` tracks whether the
+    // split map draws from `split_gpu` this frame.
+    let mut rendered_gpu = gpu_ok && app.map.split_gpu.as_ref().is_some_and(|(k, _, _)| *k == key);
+    if gpu_ok && !rendered_gpu {
+        if app.map.gpu_renderer.is_none()
+            && let Some(rs) = &app.map.render_state
+        {
+            app.map.gpu_renderer = Some(std::sync::Arc::new(crate::mapgpu::GpuMapRenderer::new(rs)));
+        }
+        if let (Some(r), Some(rs)) = (&app.map.gpu_renderer, &app.map.render_state)
+            && let Some(rustgis_engine::render::Rendered2::Gpu(scene)) =
+                rustgis_engine::render::render_backend(m, &view, rustgis_engine::render::Backend::Gpu)
+        {
+            let bufs = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, m.camera, [w, h], ppp);
+            app.map.split_gpu = Some((key, std::sync::Arc::new(bufs), scene.labels));
+            rendered_gpu = true;
         }
     }
-    if let Some((_, tex, labels)) = &app.map.split {
+        }
+    }
+    if !rendered_gpu {
+        app.map.split_gpu = None;
+        if app.map.split.as_ref().is_none_or(|(k, _, _)| *k != key)
+            && let Some(r) = rustgis_engine::render::render(m, &view)
+        {
+            let img = egui::ColorImage::from_rgba_premultiplied([r.pixmap.width() as usize, r.pixmap.height() as usize], r.pixmap.data());
+            match app.map.split.take() {
+                Some((_, mut tex, _)) => {
+                    tex.set(img, egui::TextureOptions::LINEAR);
+                    app.map.split = Some((key, tex, r.labels));
+                }
+                None => app.map.split = Some((key, ui.ctx().load_texture("split_map", img, egui::TextureOptions::LINEAR), r.labels)),
+            }
+        }
+    }
+    if let (Some((_, bufs, labels)), Some(gr)) = (&app.map.split_gpu, &app.map.gpu_renderer) {
+        painter.add(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            crate::mapgpu::SceneCallback { renderer: gr.clone(), buffers: bufs.clone(), target: app.map.gpu_target_split.clone() },
+        ));
+        for l in labels {
+            draw_label(&painter, l, pos2(rect.min.x + l.x, rect.min.y + l.y));
+        }
+    } else if let Some((_, tex, labels)) = &app.map.split {
         painter.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         for l in labels {
             draw_label(&painter, l, pos2(rect.min.x + l.x, rect.min.y + l.y));
@@ -369,15 +411,15 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         && !globe_view
         && app.session.map().view.effects.is_none()
         && app.session.map().view.color_vision == rustgis_engine::map::view::ColorVision::Normal;
-    // GPU fast path: during pan/zoom with an all-GPU scene (no CPU image runs — rasters and
-    // tiles don't re-project), only the camera changes, so rewrite the per-draw uniforms
-    // instead of re-tessellating. `tex_camera` stays behind on purpose: labels hide while
-    // zooming and shift while panning, as on the CPU path.
+    // GPU fast path: during pan/zoom (or a camera animation) with an all-GPU scene (no CPU
+    // image runs — rasters and tiles don't re-project), only the camera changes, so rewrite
+    // the per-draw uniforms instead of re-tessellating. `tex_camera` stays behind on purpose:
+    // labels hide while zooming and shift while panning, as on the CPU path.
     let stale = app.map.key != Some(key);
     let cam_only = app.map.key.is_some_and(|k| (Key { cam: k.cam, ..key }) == k);
     if stale
         && gpu_ok
-        && interacting
+        && (interacting || app.ws.playing.is_some())
         && cam_only
         && let (Some(gf), Some(rs)) = (&app.map.gpu_frame, &app.map.render_state)
         && !gf.has_images
