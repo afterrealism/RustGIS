@@ -157,8 +157,9 @@ pub(crate) fn stroke_lines(
 
 /// One marker as instances of a unit-space shape template: the selection halo first (a
 /// larger filled shape, matching the CPU's 3.5 px halo stroke drawn under the fill), then the
-/// outline (a larger fill in the stroke colour — the outer half of a centered stroke shows),
-/// then the fill itself (`Ctx::marker`).
+/// outline (a larger fill in the stroke colour), then the fill SHRUNK by half the stroke
+/// width — the CPU strokes the outline centered on the shape's edge (half over the fill), so
+/// stroke at r + w/2 under fill at r − w/2 reproduces the exact band (`Ctx::marker`).
 pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32, halo: Option<Rgba>) -> Vec<PointInstance> {
     let r = (s.size.max(1.0) * ppp) / 2.0;
     let shape = s.marker as u32;
@@ -166,10 +167,12 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
     if let Some(h) = halo {
         out.push(PointInstance { position: rel(c, origin), color: premul(h), radius_px: r + 1.75 * ppp, shape });
     }
-    if s.stroke_width > 0.0 && s.stroke.a() > 0 {
+    let stroke_active = s.stroke_width > 0.0 && s.stroke.a() > 0;
+    if stroke_active {
         out.push(PointInstance { position: rel(c, origin), color: premul(s.stroke), radius_px: r + s.stroke_width * ppp / 2.0, shape });
     }
-    out.push(PointInstance { position: rel(c, origin), color: premul(s.fill), radius_px: r, shape });
+    let fill_r = if stroke_active { (r - s.stroke_width * ppp / 2.0).max(0.0) } else { r };
+    out.push(PointInstance { position: rel(c, origin), color: premul(s.fill), radius_px: fill_r, shape });
     out
 }
 
@@ -399,8 +402,8 @@ mod tests {
         let three = marker_instances(Coord::new(5.0, 5.0), [5.0, 5.0], &s, 2.0, Some(Rgba::rgb(0, 255, 255)));
         assert_eq!(three.len(), 3, "halo + stroke + fill");
         assert_eq!(three[0].radius_px, 8.0 + 3.5, "halo = r + 1.75*ppp"); // r = 8*2/2 = 8
-        assert_eq!(three[1].radius_px, 9.0, "stroke under-fill at r + stroke_px/2");
-        assert_eq!(three[2].radius_px, 8.0);
+        assert_eq!(three[1].radius_px, 9.0, "stroke at r + w/2 (outer band)");
+        assert_eq!(three[2].radius_px, 7.0, "fill at r − w/2 (the stroke's inner half covers its band)");
         // Painter's order: halo, stroke, fill.
         assert_eq!(three[0].color, premul(Rgba::rgb(0, 255, 255)));
         assert_eq!(three[1].color, premul(Rgba::rgb(255, 255, 255)));

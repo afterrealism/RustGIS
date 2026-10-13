@@ -113,6 +113,8 @@ pub struct MapView {
     /// and egui's wgpu render state handed over by the host app.
     pub(crate) gpu_renderer: Option<std::sync::Arc<crate::mapgpu::GpuMapRenderer>>,
     pub(crate) gpu_frame: Option<std::sync::Arc<crate::mapgpu::SceneBuffers>>,
+    /// The GPU scene's offscreen MSAA target, shared with the paint callback across frames.
+    pub(crate) gpu_target: std::sync::Arc<std::sync::Mutex<Option<crate::mapgpu::SceneTarget>>>,
     pub(crate) render_state: Option<egui_wgpu::RenderState>,
     /// The GPU map backend, for now gated on the RUSTGIS_GPU environment variable.
     pub gpu_enabled: bool,
@@ -151,6 +153,7 @@ impl Default for MapView {
             comets: Default::default(),
             gpu_renderer: None,
             gpu_frame: None,
+            gpu_target: std::sync::Arc::new(std::sync::Mutex::new(None)),
             render_state: None,
             gpu_enabled: std::env::var_os("RUSTGIS_GPU").is_some(),
         }
@@ -477,8 +480,10 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // one: tex_rect == rect and labels sit unshifted) draws inside egui's wgpu pass. The GPU
     // backend only serves flat maps, so the globe's drape never meets it.
     if let (Some(gf), Some(gr)) = (&app.map.gpu_frame, &app.map.gpu_renderer) {
-        painter
-            .add(egui_wgpu::Callback::new_paint_callback(rect, crate::mapgpu::SceneCallback { renderer: gr.clone(), buffers: gf.clone() }));
+        painter.add(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            crate::mapgpu::SceneCallback { renderer: gr.clone(), buffers: gf.clone(), target: app.map.gpu_target.clone() },
+        ));
     } else if let Some(tex) = app.map.texture.as_ref().filter(|_| !draped) {
         painter.image(tex.id(), tex_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }

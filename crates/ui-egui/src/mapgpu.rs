@@ -115,20 +115,26 @@ const PREMULTIPLIED_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
 };
 
-/// Pipelines, layouts and shared resources, created once per wgpu device.
+/// Pipelines, layouts and shared resources, created once per wgpu device. The scene draws
+/// into an offscreen 4× MSAA target (anti-aliased like the CPU renderer); its resolved
+/// texture is then blitted into egui's 1× pass — paint callbacks share egui's attachment and
+/// must match its sample count, so the multisampling happens in our own pass.
 pub(crate) struct GpuMapRenderer {
     mesh_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     image_pipeline: wgpu::RenderPipeline,
+    blit_pipeline: wgpu::RenderPipeline,
     cmd_layout: wgpu::BindGroupLayout,
     image_layout: wgpu::BindGroupLayout,
     templates: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    /// MSAA sample count of the offscreen scene target.
+    samples: u32,
 }
 
 impl GpuMapRenderer {
-    /// Builds the pipelines against egui's own target format (linear, 1× MSAA like egui's
-    /// default — paint callbacks share egui's render pass and must match its attachment).
+    /// Builds the pipelines: the scene pipelines against the offscreen `Rgba8Unorm` MSAA
+    /// target, the blit pipeline against egui's own (linear, 1×) target format.
     pub(crate) fn new(rs: &RenderState) -> Self {
         let device = &rs.device;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -184,14 +190,16 @@ impl GpuMapRenderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let target = [Some(wgpu::ColorTargetState {
-            format: rs.target_format,
-            blend: Some(PREMULTIPLIED_BLEND),
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
-        let pipeline = |label: &str, vs: &str, fs: &str, buffers: &[wgpu::VertexBufferLayout<'_>], layouts: &[&wgpu::BindGroupLayout]| {
+        let pipeline = |label: &str,
+                        vs: &str,
+                        fs: &str,
+                        buffers: &[wgpu::VertexBufferLayout<'_>],
+                        layouts: &[&wgpu::BindGroupLayout],
+                        format: wgpu::TextureFormat,
+                        samples: u32| {
             let layouts: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(|l| Some(*l)).collect();
             let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = buffers.iter().map(|b| Some(b.clone())).collect();
+            let target = [Some(wgpu::ColorTargetState { format, blend: Some(PREMULTIPLIED_BLEND), write_mask: wgpu::ColorWrites::ALL })];
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &layouts,
@@ -214,7 +222,7 @@ impl GpuMapRenderer {
                 }),
                 primitive: wgpu::PrimitiveState::default(), // triangle list, no culling
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(), // 1×, matching egui's target
+                multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
                 multiview_mask: None,
                 cache: None,
             })
@@ -239,11 +247,92 @@ impl GpuMapRenderer {
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 28, shader_location: 3 },
             ],
         }];
-        let mesh_pipeline = pipeline("mapgpu_mesh", "vs_mesh", "fs_mesh", &mesh_buffers, &[&cmd_layout]);
-        let point_pipeline = pipeline("mapgpu_points", "vs_marker", "fs_marker", &point_buffers, &[&cmd_layout]);
-        let image_pipeline = pipeline("mapgpu_image", "vs_image", "fs_image", &[], &[&image_layout]);
-        GpuMapRenderer { mesh_pipeline, point_pipeline, image_pipeline, cmd_layout, image_layout, templates, sampler }
+        let samples = 4;
+        let scene_format = wgpu::TextureFormat::Rgba8Unorm;
+        let mesh_pipeline = pipeline("mapgpu_mesh", "vs_mesh", "fs_mesh", &mesh_buffers, &[&cmd_layout], scene_format, samples);
+        let point_pipeline = pipeline("mapgpu_points", "vs_marker", "fs_marker", &point_buffers, &[&cmd_layout], scene_format, samples);
+        let image_pipeline = pipeline("mapgpu_image", "vs_image", "fs_image", &[], &[&image_layout], scene_format, samples);
+        // The blit pipeline draws the resolved scene texture into egui's pass (egui's target
+        // is 1×, so a separate pipeline; the scene's own pipelines render into the 4× MSAA
+        // offscreen target).
+        let blit_pipeline = pipeline("mapgpu_blit", "vs_image", "fs_image", &[], &[&image_layout], rs.target_format, 1);
+        GpuMapRenderer {
+            mesh_pipeline,
+            point_pipeline,
+            image_pipeline,
+            blit_pipeline,
+            cmd_layout,
+            image_layout,
+            templates,
+            sampler,
+            samples,
+        }
     }
+}
+
+/// The offscreen scene target: a 4× MSAA color attachment plus the plain texture it resolves
+/// to (the blit source in egui's pass). Recreated when the map view's physical size changes.
+pub(crate) struct SceneTarget {
+    msaa_view: wgpu::TextureView,
+    resolve_tex: wgpu::Texture,
+    pub resolve_bind: wgpu::BindGroup,
+    pub size: [u32; 2],
+}
+
+impl SceneTarget {
+    pub(crate) fn new(device: &wgpu::Device, r: &GpuMapRenderer, size: [u32; 2]) -> Option<SceneTarget> {
+        let [w, h] = size;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let msaa_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mapgpu_msaa"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: r.samples,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let resolve_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mapgpu_resolve"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let resolve_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mapgpu_resolve_bind"),
+            layout: &r.image_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&resolve_tex.create_view(&wgpu::TextureViewDescriptor::default())),
+                },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&r.sampler) },
+            ],
+        });
+        Some(SceneTarget { msaa_view: msaa_tex.create_view(&wgpu::TextureViewDescriptor::default()), resolve_tex, resolve_bind, size })
+    }
+}
+
+/// Records the scene's MSAA render pass into `enc` (resolves into `tgt.resolve_tex`).
+fn record_scene(r: &GpuMapRenderer, draws: &[SceneDraw], tgt: &SceneTarget, enc: &mut wgpu::CommandEncoder) {
+    let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("mapgpu_scene"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &tgt.msaa_view,
+            depth_slice: None,
+            resolve_target: Some(&tgt.resolve_tex.create_view(&wgpu::TextureViewDescriptor::default())),
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Discard },
+        })],
+        ..Default::default()
+    });
+    paint_draws(r, draws, &mut rp);
 }
 
 /// One uploaded draw command.
@@ -419,31 +508,63 @@ impl SceneBuffers {
 pub(crate) struct SceneCallback {
     pub renderer: Arc<GpuMapRenderer>,
     pub buffers: Arc<SceneBuffers>,
+    /// The offscreen MSAA target, persistent across frames (recreated on size changes).
+    pub target: Arc<std::sync::Mutex<Option<SceneTarget>>>,
+}
+
+/// The draw loop, shared by the egui paint callback and the offscreen parity harness.
+fn paint_draws(renderer: &GpuMapRenderer, draws: &[SceneDraw], rp: &mut wgpu::RenderPass<'_>) {
+    for d in draws {
+        match d {
+            SceneDraw::Mesh { vertices, indices, index_count, bind, .. } => {
+                rp.set_pipeline(&renderer.mesh_pipeline);
+                rp.set_bind_group(0, bind, &[]);
+                rp.set_vertex_buffer(0, vertices.slice(..));
+                rp.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                rp.draw_indexed(0..*index_count, 0, 0..1);
+            }
+            SceneDraw::Points { instances, count, bind, .. } => {
+                rp.set_pipeline(&renderer.point_pipeline);
+                rp.set_bind_group(0, bind, &[]);
+                rp.set_vertex_buffer(0, instances.slice(..));
+                rp.draw(0..TEMPLATE_VERTS as u32, 0..*count);
+            }
+            SceneDraw::Image { bind, .. } => {
+                rp.set_pipeline(&renderer.image_pipeline);
+                rp.set_bind_group(0, bind, &[]);
+                rp.draw(0..6, 0..1);
+            }
+        }
+    }
 }
 
 impl CallbackTrait for SceneCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
+        _callback_resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let w = (self.buffers.size[0] * f64::from(self.buffers.ppp)).round() as u32;
+        let h = (self.buffers.size[1] * f64::from(self.buffers.ppp)).round() as u32;
+        let mut guard = self.target.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().map(|t| t.size) != Some([w, h]) {
+            *guard = SceneTarget::new(device, &self.renderer, [w, h]);
+        }
+        if let Some(tgt) = guard.as_ref() {
+            record_scene(&self.renderer, &self.buffers.draws, tgt, egui_encoder);
+        }
+        Vec::new()
+    }
+
     fn paint(&self, _info: egui::PaintCallbackInfo, rp: &mut wgpu::RenderPass<'static>, _res: &CallbackResources) {
-        for d in &self.buffers.draws {
-            match d {
-                SceneDraw::Mesh { vertices, indices, index_count, bind, .. } => {
-                    rp.set_pipeline(&self.renderer.mesh_pipeline);
-                    rp.set_bind_group(0, bind, &[]);
-                    rp.set_vertex_buffer(0, vertices.slice(..));
-                    rp.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-                    rp.draw_indexed(0..*index_count, 0, 0..1);
-                }
-                SceneDraw::Points { instances, count, bind, .. } => {
-                    rp.set_pipeline(&self.renderer.point_pipeline);
-                    rp.set_bind_group(0, bind, &[]);
-                    rp.set_vertex_buffer(0, instances.slice(..));
-                    rp.draw(0..TEMPLATE_VERTS as u32, 0..*count);
-                }
-                SceneDraw::Image { bind, .. } => {
-                    rp.set_pipeline(&self.renderer.image_pipeline);
-                    rp.set_bind_group(0, bind, &[]);
-                    rp.draw(0..6, 0..1);
-                }
-            }
+        let guard = self.target.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tgt) = guard.as_ref() {
+            rp.set_pipeline(&self.renderer.blit_pipeline);
+            rp.set_bind_group(0, &tgt.resolve_bind, &[]);
+            rp.draw(0..6, 0..1);
         }
     }
 }
@@ -545,5 +666,271 @@ mod tests {
         };
         let sb = SceneBuffers::from_scene(&rs.device, &rs.queue, &r, &scene, Camera::world(), [400.0, 300.0], 1.0);
         assert_eq!(sb.draws.len(), 3);
+    }
+
+    // ---- CPU↔GPU pixel parity: render the same map through both backends and compare ----
+
+    use rustgis_engine::data::{Dataset, Geometry, GeometryType};
+    use rustgis_engine::map::{Map, Marker, Renderer, Rgba, Symbol};
+    use rustgis_engine::render::{self, Backend, Rendered2, View};
+
+    fn world_view() -> View {
+        View { width: 640.0, height: 400.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false }
+    }
+
+    /// Renders the GpuScene into an offscreen texture and reads it back (premultiplied RGBA,
+    /// the same bytes the CPU pixmap holds). `None` on hosts without a GPU adapter.
+    fn gpu_render_offscreen(map: &mut Map, view: &View) -> Option<Vec<u8>> {
+        let rs = headless_render_state()?;
+        let r = GpuMapRenderer::new(&rs);
+        let Some(Rendered2::Gpu(scene)) = render::render_backend(map, view, Backend::Gpu) else { panic!("gpu-compatible scene") };
+        let bufs = SceneBuffers::from_scene(
+            &rs.device,
+            &rs.queue,
+            &r,
+            &scene,
+            view.camera,
+            [view.width, view.height],
+            view.pixels_per_point as f32,
+        );
+        let (w, h) = view.pixel_size();
+        if w == 0 || h == 0 {
+            return None;
+        }
+        // The production path: MSAA offscreen pass, resolved to a plain texture.
+        let tgt = SceneTarget::new(&rs.device, &r, [w, h])?;
+        let mut enc = rs.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("parity") });
+        record_scene(&r, &bufs.draws, &tgt, &mut enc);
+        // Buffer copies need 256-aligned rows; pad and strip on readback.
+        let row_bytes = (w * 4).div_ceil(256) * 256;
+        let buf = rs.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("parity"),
+            size: u64::from(row_bytes * h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        enc.copy_texture_to_buffer(
+            tgt.resolve_tex.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        rs.queue.submit(Some(enc.finish()));
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).ok()?;
+        rx.recv().ok()?.ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let mut out = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h as usize {
+            let src = y * row_bytes as usize;
+            out[y * w as usize * 4..(y + 1) * w as usize * 4].copy_from_slice(data.get(src..src + w as usize * 4)?);
+        }
+        drop(data);
+        buf.unmap();
+        Some(out)
+    }
+
+    /// Pixels differing by >16 whose 3×3 neighbourhood in the CPU render is FLAT (max − min
+    /// < 4 per channel). Edge pixels legitimately differ between analytic AA (CPU) and 4× MSAA
+    /// (GPU) — worst on 1-2 px features at world zoom; a mismatch in a flat area is a
+    /// structural bug (wrong colour, missing content, bad z-order).
+    fn structural_outliers(cpu: &[u8], gpu: &[u8], w: usize, h: usize) -> usize {
+        let mut out = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                let worst = (0..4).map(|c| cpu[i + c].abs_diff(gpu[i + c])).max().unwrap_or(0);
+                if worst <= 16 {
+                    continue;
+                }
+                let mut lo = [255u8; 4];
+                let mut hi = [0u8; 4];
+                for dy in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                    for dx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                        let j = (dy * w + dx) * 4;
+                        for c in 0..4 {
+                            lo[c] = lo[c].min(cpu[j + c]);
+                            hi[c] = hi[c].max(cpu[j + c]);
+                        }
+                    }
+                }
+                if (0..4).all(|c| hi[c] - lo[c] < 4) {
+                    out += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Mean per-byte absolute difference and the fraction of pixels whose worst channel
+    /// differs by more than 16.
+    fn diff_stats(a: &[u8], b: &[u8]) -> (f64, f64) {
+        assert_eq!(a.len(), b.len());
+        let mut sum = 0u64;
+        let mut over = 0usize;
+        for (px, py) in a.chunks(4).zip(b.chunks(4)) {
+            let mut worst = 0u8;
+            for c in 0..4 {
+                let d = px[c].abs_diff(py[c]);
+                sum += u64::from(d);
+                worst = worst.max(d);
+            }
+            if worst > 16 {
+                over += 1;
+            }
+        }
+        (sum as f64 / a.len() as f64, over as f64 / (a.len() / 4) as f64)
+    }
+
+    fn assert_parity(name: &str, build: impl Fn() -> Map, view: &View) {
+        let mut gm = build();
+        let Some(gpu) = gpu_render_offscreen(&mut gm, view) else { return }; // no adapter: skip
+        let mut cm = build();
+        let cpu = render::render(&mut cm, view).expect("cpu render");
+        // PARITY_DUMP=/tmp/dir writes {name}-{cpu,gpu,diff}.png for eyeballing failures.
+        if let Some(dir) = std::env::var_os("PARITY_DUMP") {
+            let (w, h) = view.pixel_size();
+            let dump = |suffix: &str, data: &[u8]| {
+                let p = std::path::Path::new(&dir).join(format!("{}-{suffix}.png", name.replace(' ', "_")));
+                let _ = image::save_buffer(&p, data, w, h, image::ColorType::Rgba8);
+            };
+            dump("cpu", cpu.pixmap.data());
+            dump("gpu", &gpu);
+            let mut diff: Vec<u8> = cpu.pixmap.data().iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b).saturating_mul(8)).collect();
+            for px in diff.chunks_mut(4) {
+                px[3] = 255; // opaque, or the PNG previews as blank
+            }
+            dump("diff", &diff);
+        }
+        // Raw mean: same image overall. Structural: no mismatches away from edges — the CPU
+        // anti-aliases analytically, the GPU via 4× MSAA, and on 1-2 px features their
+        // coverage quantization legitimately differs (edge pixels are excluded by the
+        // flatness test); wrong colours, missing content and bad z-order fail here.
+        let (mean_raw, _) = diff_stats(cpu.pixmap.data(), &gpu);
+        let (w, h) = view.pixel_size();
+        let structural = structural_outliers(cpu.pixmap.data(), &gpu, w as usize, h as usize);
+        assert!(mean_raw < 1.5 && structural == 0, "{name}: raw mean {mean_raw:.2}/255, {structural} structural outliers");
+    }
+
+    fn world_map() -> Map {
+        let mut m = Map::new("Map");
+        for (name, text) in [
+            ("Countries", render::sample_data::COUNTRIES),
+            ("Rivers", render::sample_data::RIVERS),
+            ("Lakes", render::sample_data::LAKES),
+            ("Cities", render::sample_data::CITIES),
+        ] {
+            if let Some(d) = render::world_dataset(name, text) {
+                m.add_dataset(d);
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn parity_world_sample() {
+        assert_parity("world sample", world_map, &world_view());
+    }
+
+    #[test]
+    fn parity_dark_world_sample() {
+        assert_parity("dark world sample", world_map, &View { dark: true, ..world_view() });
+    }
+
+    #[test]
+    fn parity_polygon_with_hole() {
+        assert_parity(
+            "polygon with hole",
+            || {
+                let mut m = Map::new("Map");
+                let mut d = Dataset::new("holes", GeometryType::Polygon, vec![]);
+                let ring = |x0: f64, y0: f64, x1: f64, y1: f64| {
+                    vec![Coord::new(x0, y0), Coord::new(x1, y0), Coord::new(x1, y1), Coord::new(x0, y1)]
+                };
+                d.push(Some(Geometry::Polygon(vec![vec![ring(-60.0, -20.0, 0.0, 40.0), ring(-40.0, 0.0, -20.0, 20.0)]])), vec![]);
+                m.add_dataset(d);
+                m
+            },
+            &world_view(),
+        );
+    }
+
+    #[test]
+    fn parity_markers_all_shapes() {
+        assert_parity(
+            "all marker shapes",
+            || {
+                let mut m = Map::new("Map");
+                for (i, marker) in Marker::ALL.into_iter().enumerate() {
+                    let mut d = Dataset::new(format!("p{i}"), GeometryType::Point, vec![]);
+                    d.push(Some(Geometry::Point(Coord::new(i as f64 * 25.0 - 50.0, 20.0))), vec![]);
+                    let id = m.add_dataset(d);
+                    if let Some(l) = m.layer_mut(id) {
+                        l.renderer = Renderer::Single(Symbol {
+                            fill: Rgba::rgb(0xE0, 0x7B, 0x39),
+                            stroke: Rgba::rgb(255, 255, 255),
+                            stroke_width: 1.5,
+                            size: 12.0,
+                            marker,
+                        });
+                    }
+                }
+                m
+            },
+            &world_view(),
+        );
+    }
+
+    #[test]
+    fn parity_lines_and_selection() {
+        assert_parity(
+            "lines and selection",
+            || {
+                let mut m = Map::new("Map");
+                let mut d = Dataset::new("rivers", GeometryType::Polyline, vec![]);
+                d.push(Some(Geometry::Line(vec![vec![Coord::new(-100.0, 0.0), Coord::new(-50.0, 20.0), Coord::new(0.0, 0.0)]])), vec![]);
+                d.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, -20.0), Coord::new(50.0, -10.0)]])), vec![]);
+                let id = m.add_dataset(d);
+                if let Some(l) = m.layer_mut(id) {
+                    l.selection = vec![0];
+                }
+                m
+            },
+            &world_view(),
+        );
+    }
+
+    #[test]
+    fn parity_transparent_layer_interleaves() {
+        assert_parity(
+            "transparent layer interleave",
+            || {
+                let mut m = Map::new("Map");
+                // Drawn bottom-up: last in the list first.
+                let ring = |x0: f64| {
+                    vec![vec![vec![Coord::new(x0, 0.0), Coord::new(x0 + 30.0, 0.0), Coord::new(x0 + 30.0, 30.0), Coord::new(x0, 30.0)]]]
+                };
+                let mut d = Dataset::new("a", GeometryType::Polygon, vec![]);
+                d.push(Some(Geometry::Polygon(ring(-60.0))), vec![]);
+                m.add_dataset(d);
+                let mut d = Dataset::new("b", GeometryType::Polygon, vec![]);
+                d.push(Some(Geometry::Polygon(ring(-20.0))), vec![]);
+                let id = m.add_dataset(d);
+                if let Some(l) = m.layer_mut(id) {
+                    l.transparency = 50.0; // offscreen-composited → a CPU image command
+                }
+                let mut d = Dataset::new("c", GeometryType::Polygon, vec![]);
+                d.push(Some(Geometry::Polygon(ring(20.0))), vec![]);
+                m.add_dataset(d);
+                m
+            },
+            &world_view(),
+        );
     }
 }
