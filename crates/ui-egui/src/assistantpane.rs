@@ -1281,6 +1281,8 @@ mod tests {
         app.run("ui.pane.assistant", serde_json::Value::Null).unwrap();
         app.assistant.settings = true;
         // Draw settings without polling, so each click's catalog request remains observable.
+        // A fixed number of frames, not `run`: each catalog request ends on a thread that asks for a
+        // repaint, which can land mid-run (it did on Windows) and run past `run`'s step limit.
         let mut fonts = false;
         let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(
             move |ui, app: &mut RustGisApp| {
@@ -1294,23 +1296,23 @@ mod tests {
             },
             app,
         );
-        h.run();
+        h.run_steps(4);
         h.state_mut().assistant.models_slot = None;
         h.get_by_value("ChatGPT (sign in)").click();
-        h.run();
+        h.run_steps(4);
         h.get_by_label("Ollama (local)").click();
-        h.run();
+        h.run_steps(4);
         assert!(h.state().assistant.models_slot.is_none());
         h.get_by_value("Ollama (local)").click();
-        h.run();
+        h.run_steps(4);
         h.get_by_label("ChatGPT (sign in)").click();
-        h.run();
+        h.run_steps(4);
         assert!(h.state().assistant.models_slot.is_some());
         h.state_mut().assistant.models_slot = None;
         h.get_by_value(&a.label()).click();
-        h.run();
+        h.run_steps(4);
         h.get_by_label(&b.label()).click();
-        h.run();
+        h.run_steps(4);
         assert!(h.state().assistant.models_slot.is_some());
         assert_eq!(h.state().assistant.agent.as_ref().unwrap().config.client_id, b.client_id);
         assert_eq!(chatgpt::load_any().unwrap().client_id, b.client_id);
