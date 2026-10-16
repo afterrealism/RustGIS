@@ -200,6 +200,11 @@ impl MapView {
         self.key = None;
         self.gpu_frame = None;
     }
+    /// The camera the last full render was drawn with (diagnostics and tests).
+    pub fn full_frame_camera(&self) -> Camera {
+        self.tex_camera
+    }
+
     /// How long the last map draw took, in milliseconds.
     pub fn render_ms(&self) -> u64 {
         self.render_ms
@@ -435,10 +440,13 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         && app.session.map().view.color_vision == rustgis_engine::map::view::ColorVision::Normal;
     // GPU fast path: during pan/zoom (or a camera animation) with an all-GPU scene (no CPU
     // image runs — rasters and tiles don't re-project), only the camera changes, so rewrite
-    // the per-draw uniforms instead of re-tessellating. `tex_camera` stays behind on purpose:
-    // labels hide while zooming and shift while panning, as on the CPU path.
+    // the per-draw uniforms instead of re-tessellating. `key` and `tex_camera` stay at the
+    // last full render: the scene's contents (extent culling, the 0.35 px decimation, label
+    // placement) are baked for that camera, so once the motion settles the still-stale key
+    // makes the branch below do one full re-render.
     let stale = app.map.key != Some(key);
     let cam_only = app.map.key.is_some_and(|k| (Key { cam: k.cam, ..key }) == k);
+    let mut fast_engaged = false;
     if stale
         && gpu_ok
         && (interacting || app.ws.playing.is_some())
@@ -447,10 +455,12 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         && !gf.has_images
     {
         gf.set_camera(&rs.queue, &cam);
-        app.map.key = Some(key);
+        fast_engaged = true;
     }
     let stale = app.map.key != Some(key);
-    if stale && (gpu_ok || !interacting || app.map.texture.is_none() || app.map.key.is_some_and(|k| k.rev != key.rev || k.size != key.size))
+    if stale
+        && !fast_engaged
+        && (gpu_ok || !interacting || app.map.texture.is_none() || app.map.key.is_some_and(|k| k.rev != key.rev || k.size != key.size))
     {
         let t0 = web_time::Instant::now();
         let view = View { width: w, height: h, pixels_per_point: render_ppp as f64, camera: cam };
