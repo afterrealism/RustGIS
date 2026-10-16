@@ -926,7 +926,10 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             if let Some(Some(g)) = geoms.get(*row)
                 && rows.get(*row) == Some(&true)
             {
-                if gpu_layer && mesh::collect_highlight(&mut cmds, g, &layer.symbol(*row), ctx.ppp, map_per_px).is_ok() {
+                // Follow the layer's own backend: when it fell back to the CPU pixmap, the
+                // highlight must too — tessellated here, the layer's later-flushed Image would
+                // draw over it (the CPU path draws highlights over the layer).
+                if gpu_done && mesh::collect_highlight(&mut cmds, g, &layer.symbol(*row), ctx.ppp, map_per_px).is_ok() {
                     // highlight tessellated into the scene, right after its layer
                 } else {
                     ctx.highlight(&mut pm, g, &layer.symbol(*row));
