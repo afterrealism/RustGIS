@@ -84,7 +84,8 @@ them by category only. Find Tools searches them.
   and areas are in metres. Data spanning more than 40° of longitude stays in degrees.
 - Tools that take several layers (a composite's bands, a mosaic's tiles) list them in order:
   **Add** picks a layer, and ▲ ▼ change its place (the order of the bands, for a composite). From
-  the command line, name them separated by `;`: `"inputs":"red;green;blue"`.
+  the command line, name them separated by `;`: `"inputs":"red;green;blue"`. In the desktop app
+  a file not open as a layer can be added too: type its path below the list and press Enter.
 - Raster outputs are kept inside the project, so they save and reopen with it. Text and table
   reports appear in the tool's messages.
 - LiDAR and other inputs RustGIS doesn't open as layers take a file path, read like Add Data

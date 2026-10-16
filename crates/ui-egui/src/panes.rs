@@ -1162,7 +1162,8 @@ fn layer_list(values: &mut HashMap<&'static str, String>, ui: &mut Ui, param: &'
         }
         _ => {}
     }
-    let left: Vec<String> = offered.into_iter().filter(|o| !names.contains(o)).collect();
+    // A name holding the separator would come back as two entries: not offered.
+    let left: Vec<String> = offered.into_iter().filter(|o| !o.contains(';') && !names.contains(o)).collect();
     ui.add_enabled_ui(!left.is_empty(), |ui| {
         egui::ComboBox::from_id_salt(("gp_list", param)).selected_text(tl!("Add")).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
             for o in left {
@@ -1173,6 +1174,21 @@ fn layer_list(values: &mut HashMap<&'static str, String>, ui: &mut Ui, param: &'
             }
         });
     });
+    // A file not opened as a layer, typed in (the runner reads paths on disk).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let id = ui.id().with(("gp_list_path", param));
+        let mut path: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+        let edit =
+            ui.add(egui::TextEdit::singleline(&mut path).hint_text(tl!("Add a file path")).desired_width(ui.available_width() - 4.0));
+        let path_name = path.trim();
+        if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !path_name.is_empty() && !path_name.contains(';') {
+            names.push(path_name.to_string());
+            changed = true;
+            path.clear();
+        }
+        ui.data_mut(|d| d.insert_temp(id, path));
+    }
     if changed {
         values.insert(param, names.join(";"));
     }
