@@ -308,8 +308,6 @@ fn split_view(app: &mut RustGisApp, ui: &mut Ui, other: usize, rect: Rect, t: &T
             }
         }
     }
-        }
-    }
     if !rendered_gpu {
         app.map.split_gpu = None;
         if app.map.split.as_ref().is_none_or(|(k, _, _)| *k != key)

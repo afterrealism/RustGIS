@@ -921,13 +921,7 @@ mod tests {
                 m.projection = rustgis_engine::map::Projection::Custom("northPolar".into());
                 m
             },
-            &View {
-                width: 640.0,
-                height: 400.0,
-                pixels_per_point: 1.0,
-                camera: Camera { center: Coord::new(0.0, 0.0), res: 15_000.0 },
-                dark: false,
-            },
+            &View { width: 640.0, height: 400.0, pixels_per_point: 1.0, camera: Camera { center: Coord::new(0.0, 0.0), res: 15_000.0 } },
         );
     }
 

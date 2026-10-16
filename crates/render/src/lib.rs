@@ -1834,7 +1834,7 @@ mod tests {
                 marker: rustgis_map::Marker::Circle,
             });
         }
-        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
         let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         for c in &scene.cmds {
             if let gpu_scene::DrawCmd::Mesh { vertices, .. } = c {
