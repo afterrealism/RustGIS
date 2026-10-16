@@ -1585,8 +1585,8 @@ pub fn shapefile_parts(ds: &Dataset) -> Result<(Vec<(&'static str, Vec<u8>)>, us
                         // rounded (it goes through f64).
                         let d = decimals.get(k).copied().unwrap_or(0);
                         // Likewise a number too small for the field's decimals, which would read 0.
-                        let exact = !matches!(v, Value::Int(i) if i.unsigned_abs() > 1 << 53)
-                            && !(f.ty == FieldType::Double && *x != 0.0 && x.abs() < 0.5 * 10f64.powi(-(d as i32)));
+                        let exact = !(matches!(v, Value::Int(i) if i.unsigned_abs() > 1 << 53)
+                            || f.ty == FieldType::Double && *x != 0.0 && x.abs() < 0.5 * 10f64.powi(-(d as i32)));
                         exact && format!("{x:.d$}").len() <= if f.ty == FieldType::Integer { 18 } else { 24 }
                     });
                     FieldValue::Numeric(if f.ty == FieldType::Integer { x.map(f64::round) } else { x })

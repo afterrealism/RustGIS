@@ -252,7 +252,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
                 if geom.is_none() {
                     bad = true;
                 }
-            } else if !p.children().any(|c| c.is_element()) && !(is_gml(&p) && local(&p) == "boundedBy") {
+            } else if !(p.children().any(|c| c.is_element()) || is_gml(&p) && local(&p) == "boundedBy") {
                 let key = local(&p).to_string();
                 if !kind.columns.contains(&key) && kind.columns.len() < 500 {
                     kind.columns.push(key.clone());
