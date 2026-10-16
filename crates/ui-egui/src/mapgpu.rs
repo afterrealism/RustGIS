@@ -390,8 +390,9 @@ fn cmd_fits(limits: &wgpu::Limits, cmd: &DrawCmd) -> bool {
                 && u32::try_from(indices.len()).is_ok()
         }
         DrawCmd::Points { instances, .. } => fits(std::mem::size_of_val(instances.as_slice())) && u32::try_from(instances.len()).is_ok(),
-        DrawCmd::Image { rgba, size: [w, h] } => {
-            (1..=max_dim).contains(w) && (1..=max_dim).contains(h) && rgba.len() as u64 == *w as u64 * *h as u64 * 4
+        DrawCmd::Image { pixmap } => {
+            let (w, h) = (pixmap.width(), pixmap.height());
+            (1..=max_dim).contains(&w) && (1..=max_dim).contains(&h) && pixmap.data().len() as u64 == w as u64 * h as u64 * 4
         }
     }
 }
@@ -482,10 +483,10 @@ impl SceneBuffers {
                         origin: *origin,
                     });
                 }
-                DrawCmd::Image { rgba, size: [w, h] } => {
+                DrawCmd::Image { pixmap } => {
                     let texture = device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("mapgpu_image"),
-                        size: wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
+                        size: wgpu::Extent3d { width: pixmap.width(), height: pixmap.height(), depth_or_array_layers: 1 },
                         mip_level_count: 1,
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
@@ -501,9 +502,13 @@ impl SceneBuffers {
                             origin: wgpu::Origin3d::ZERO,
                             aspect: wgpu::TextureAspect::All,
                         },
-                        rgba,
-                        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(*h) },
-                        wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 },
+                        pixmap.data(),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(pixmap.width() * 4),
+                            rows_per_image: Some(pixmap.height()),
+                        },
+                        wgpu::Extent3d { width: pixmap.width(), height: pixmap.height(), depth_or_array_layers: 1 },
                     );
                     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -697,12 +702,15 @@ mod tests {
         assert!(!cmd_fits(&limits, &mesh(100, 6)), "a vertex buffer over max_buffer_size declines");
         assert!(!cmd_fits(&limits, &mesh(4, 300)), "an index buffer over max_buffer_size declines");
         assert!(
-            !cmd_fits(&limits, &DrawCmd::Image { rgba: vec![0; 16], size: [2049, 2] }),
+            !cmd_fits(&limits, &DrawCmd::Image { pixmap: rustgis_engine::render::Pixmap::new(2049, 2).expect("pixmap") }),
             "an image over max_texture_dimension_2d declines"
         );
-        assert!(!cmd_fits(&limits, &DrawCmd::Image { rgba: vec![], size: [0, 0] }), "a 0x0 image declines");
-        assert!(!cmd_fits(&limits, &DrawCmd::Image { rgba: vec![0; 8], size: [2, 2] }), "pixels that don't match the size decline");
-        assert!(cmd_fits(&limits, &DrawCmd::Image { rgba: vec![0; 16], size: [2, 2] }), "a valid 2x2 image fits");
+        // 0x0 and size-mismatched images are now unconstructible (Pixmap always holds w*h*4):
+        // the type does the work.
+        assert!(
+            cmd_fits(&limits, &DrawCmd::Image { pixmap: rustgis_engine::render::Pixmap::new(2, 2).expect("pixmap") }),
+            "a valid 2x2 image fits"
+        );
     }
 
     #[test]
@@ -720,7 +728,7 @@ mod tests {
                     origin: [0.0, 0.0],
                     instances: vec![PointInstance { position: [10.0, 10.0], color: [0.0, 1.0, 0.0, 1.0], radius_px: 4.0, shape: 0 }],
                 },
-                DrawCmd::Image { rgba: vec![128; 4], size: [1, 1] },
+                DrawCmd::Image { pixmap: rustgis_engine::render::Pixmap::new(1, 1).expect("pixmap") },
             ],
             labels: vec![],
             unplaced: vec![],

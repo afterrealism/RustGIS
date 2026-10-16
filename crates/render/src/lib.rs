@@ -636,9 +636,10 @@ fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Ren
 /// between GPU mesh commands, preserving the exact painter's-algorithm order.
 fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bool) -> Option<()> {
     if *dirty {
-        let (w, h) = (pm.width(), pm.height());
-        cmds.push(gpu_scene::DrawCmd::Image { rgba: pm.data().to_vec(), size: [w, h] });
-        *pm = Pixmap::new(w, h)?;
+        // Move the pixmap into the command (no full-screen copy) and start a fresh transparent
+        // accumulator.
+        let old = std::mem::replace(pm, Pixmap::new(pm.width(), pm.height())?);
+        cmds.push(gpu_scene::DrawCmd::Image { pixmap: old });
         *dirty = false;
     }
     Some(())
@@ -785,7 +786,9 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         None => raster::Place::Flat(&flat, &key),
     };
     let tile_out = tiles::draw(&mut pm, map, view, tile_place, !map.label_display.paused && map.label_lock.is_none());
-    cpu_dirty |= !map.tiles.is_empty();
+    // Hidden tile layers draw nothing: marking dirty anyway would emit an empty full-screen
+    // Image command (a pointless upload, and it poisons the camera fast path's `has_images`).
+    cpu_dirty |= map.tiles.iter().any(|t| t.visible);
 
     // Layers, bottom first.
     let mut label_candidates: Vec<(PlacedLabel, f32, (u32, usize))> = Vec::new();
@@ -1070,6 +1073,12 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         }
         Backend::Gpu => {
             flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
+            // Pathological CPU/GPU alternation (rasters, masks, blends between every vector
+            // layer) costs more full-screen uploads than a plain CPU rasterization.
+            let images = cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })).count();
+            if images > 4 {
+                return render_with_backend(map, view, full_res_rasters, Backend::Cpu);
+            }
             Some(RenderOutput::Gpu(gpu_scene::GpuScene {
                 clear: mesh::premul(water),
                 cmds,
@@ -1721,8 +1730,11 @@ mod tests {
         h
     }
 
-    /// Golden hash of the sample world render: the GPU-backend refactor (Backend/Dest
-    /// plumbing) must not change a single pixel of the CPU path.
+    /// Golden hash of the sample world render: a byte-lock proving the GPU-backend refactor
+    /// (Backend/RenderOutput plumbing) never changed the CPU path's output. tiny-skia is
+    /// deterministic IEEE f32 with no platform fast-math, so the hash should hold everywhere;
+    /// if a platform or a tiny-skia bump ever disagrees (CI runs Linux/macOS/Windows), convert
+    /// this to a handful of sampled pixels rather than deleting the lock.
     #[test]
     fn world_atlas_pixmap_is_byte_stable() {
         let mut m = sample_world();
@@ -1796,6 +1808,45 @@ mod tests {
         let last_image = kinds.iter().rposition(|k| *k == "image").expect("the blended layer's cpu image");
         assert!(kinds[..last_image].contains(&"mesh"), "a mesh below the blended layer: {kinds:?}");
         assert!(kinds[last_image + 1..].contains(&"mesh"), "a mesh above the blended layer: {kinds:?}");
+    }
+
+    #[test]
+    fn gpu_backend_skips_the_spurious_image_for_hidden_tile_layers() {
+        let mut m = sample_world();
+        m.tiles.push(rustgis_map::TileLayer::new("hidden", rustgis_map::TileKind::Raster, "https://example.invalid/{z}/{x}/{y}.png"));
+        for t in &mut m.tiles {
+            t.visible = false;
+        }
+        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        assert!(!scene.cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })), "hidden tiles must not emit an empty image");
+    }
+
+    #[test]
+    fn gpu_backend_caps_image_commands_to_a_cpu_frame() {
+        // More than four alternating CPU-only layers costs more full-screen uploads than a
+        // plain CPU rasterization: the whole frame goes to the CPU backend.
+        let build = |blends: usize| {
+            let mut m = Map::new("Map");
+            for i in 0..(blends * 2 + 1) {
+                let id = square_layer(&mut m, &format!("l{i}"), i as f64 * 20.0, 0.0, 10.0);
+                if i % 2 == 1
+                    && let Some(l) = m.layer_mut(id)
+                {
+                    l.transparency = 50.0; // offscreen-composited → an image command each
+                }
+            }
+            m
+        };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let mut three = build(3);
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut three, &view, Backend::Gpu) else { panic!("3 blends stays gpu") };
+        assert_eq!(scene.cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })).count(), 3);
+        let mut five = build(5);
+        assert!(
+            matches!(render_backend(&mut five, &view, Backend::Gpu), Some(RenderOutput::Cpu(_))),
+            "5 blends falls back to the cpu frame"
+        );
     }
 
     #[test]

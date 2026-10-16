@@ -32,8 +32,9 @@ pub struct GpuScene {
 /// that need tiny-skia: masks, blend modes, transparency, aggregation, extrusion) at its
 /// exact z-position; `Mesh`/`Points` are lyon-tessellated vector layers.
 pub enum DrawCmd {
-    /// Screen-sized premultiplied RGBA, drawn covering the whole map view.
-    Image { rgba: Vec<u8>, size: [u32; 2] },
+    /// Screen-sized premultiplied RGBA, drawn covering the whole map view. The pixmap is
+    /// moved in, not copied — flushing the CPU accumulator doesn't pay a full-screen `to_vec`.
+    Image { pixmap: tiny_skia::Pixmap },
     /// Tessellated polygon fills and line/ring strokes of one layer run.
     Mesh { origin: [f64; 2], vertices: Vec<MeshVertex>, indices: Vec<u32> },
     /// Point markers: instances of a small set of unit-space shape templates.

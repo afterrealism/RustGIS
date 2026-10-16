@@ -15,6 +15,12 @@ use rustgis_map::{Layer, Rgba, Symbol};
 use crate::SELECTION;
 use crate::gpu_scene::{DrawCmd, MeshVertex, PointInstance};
 
+/// Lyon refused to tessellate something tiny-skia would draw; the caller falls the layer (or
+/// the outline) back to the CPU path. Empty marker for `Result<_, TessError>` so clippy's
+/// `result_unit_err` stays happy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TessError;
+
 /// Premultiplied 0..1 RGBA for the GPU (tiny-skia stores premultiplied; wgpu blends the same way).
 pub(crate) fn premul(c: Rgba) -> [f32; 4] {
     let a = c.a() as f32 / 255.0;
@@ -91,7 +97,7 @@ pub(crate) fn fill_polygon(
     origin: [f64; 2],
     color: [f32; 4],
     map_per_px: f64,
-) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError> {
     let mut out: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
     let mut tess = FillTessellator::new();
     for rings in polys {
@@ -104,7 +110,7 @@ pub(crate) fn fill_polygon(
                 MeshVertex { position: [p.x, p.y], normal: [0.0, 0.0], color, stroke_px: 0.0, _pad: 0.0 }
             }),
         )
-        .map_err(|_| ())?;
+        .map_err(|_| TessError)?;
     }
     Ok((!out.indices.is_empty()).then_some((out.vertices, out.indices)))
 }
@@ -120,10 +126,15 @@ fn stroke(
     map_per_px: f64,
     closed: bool,
     min_points: usize,
-) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError> {
     let mut out: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
     let mut tess = StrokeTessellator::new();
-    let options = StrokeOptions::default().with_line_width(1.0).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
+    // Tolerance is in the tessellation's own units (the radius here is 0.5): 0.005 gives ~31
+    // segments per full circle of round cap/join — lyon's default 0.1 gives ~5, and the
+    // vertex shader scales the normals up to any stroke_px, which would read as polygonal
+    // next to tiny-skia's analytic curves.
+    let options =
+        StrokeOptions::default().with_line_width(1.0).with_tolerance(0.005).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
     for ring in rings {
         for pts in decimate_runs(ring, map_per_px) {
             if pts.len() < min_points {
@@ -146,7 +157,7 @@ fn stroke(
                     MeshVertex { position: [p.x - n.x * 0.5, p.y - n.y * 0.5], normal: [n.x, n.y], color, stroke_px: width_px, _pad: 0.0 }
                 }),
             )
-            .map_err(|_| ())?;
+            .map_err(|_| TessError)?;
         }
     }
     Ok((!out.indices.is_empty()).then_some((out.vertices, out.indices)))
@@ -159,7 +170,7 @@ pub(crate) fn stroke_rings(
     color: [f32; 4],
     width_px: f32,
     map_per_px: f64,
-) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError> {
     let rings: Vec<Vec<Coord>> = polys.iter().flatten().cloned().collect();
     stroke(&rings, origin, color, width_px, map_per_px, true, 3)
 }
@@ -171,7 +182,7 @@ pub(crate) fn stroke_lines(
     color: [f32; 4],
     width_px: f32,
     map_per_px: f64,
-) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError> {
     stroke(parts, origin, color, width_px.max(0.5), map_per_px, false, 2)
 }
 
@@ -198,10 +209,14 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
 
 /// Appends a tessellated part with its indices rebased onto the shared vertex list. `Err` when
 /// lyon failed the part or the result would overflow the u32 index space.
-fn extend_mesh(v: &mut Vec<MeshVertex>, i: &mut Vec<u32>, part: Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()>) -> Result<(), ()> {
+fn extend_mesh(
+    v: &mut Vec<MeshVertex>,
+    i: &mut Vec<u32>,
+    part: Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError>,
+) -> Result<(), TessError> {
     if let Some((pv, pi)) = part? {
         if v.len() + pv.len() > u32::MAX as usize {
-            return Err(()); // a mesh this big can't index itself (u32): the layer falls back to the CPU
+            return Err(TessError); // a mesh this big can't index itself (u32): the layer falls back to the CPU
         }
         let base = v.len() as u32;
         v.extend(pv);
@@ -224,7 +239,7 @@ fn append_geometry(
     wireframe: bool,
     ppp: f32,
     map_per_px: f64,
-) -> Result<(), ()> {
+) -> Result<(), TessError> {
     match g {
         Geometry::Point(c) => pts.extend(marker_instances(*c, origin, s, ppp, None)),
         Geometry::MultiPoint(cs) => cs.iter().for_each(|c| pts.extend(marker_instances(*c, origin, s, ppp, None))),
@@ -252,7 +267,7 @@ fn append_geometry(
 /// Collects one GPU-eligible layer into Mesh/Points commands. `geoms`, `rows` and `visible`
 /// are the render loop's own (projected geometries, row filter, extent cull), so the GPU
 /// draws exactly the features the CPU would. `Ok(None)` when nothing visible was collected;
-/// `Err(())` when lyon refused a feature — the caller then draws the whole layer with
+/// `Err(TessError)` when lyon refused a feature — the caller then draws the whole layer with
 /// tiny-skia instead (nothing is pushed part-way).
 pub(crate) fn collect_layer(
     cmds: &mut Vec<DrawCmd>,
@@ -263,7 +278,7 @@ pub(crate) fn collect_layer(
     wireframe: bool,
     ppp: f32,
     map_per_px: f64,
-) -> Result<Option<[f64; 2]>, ()> {
+) -> Result<Option<[f64; 2]>, TessError> {
     // Stable origin: the centre of the drawn features' extent. Two passes cost one extra
     // extent fold — the same order of work as the culling pass the CPU render already does.
     let mut ext = Extent::EMPTY;
@@ -297,7 +312,7 @@ pub(crate) fn collect_layer(
 
 /// Selection highlight of one feature, after its layer (`Ctx::highlight`): haloed markers,
 /// a wider cyan under-stroke for lines, translucent cyan fill + outline for polygons.
-pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbol, ppp: f32, map_per_px: f64) -> Result<(), ()> {
+pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbol, ppp: f32, map_per_px: f64) -> Result<(), TessError> {
     let e = g.extent();
     let origin = [e.center().x, e.center().y];
     match g {
@@ -335,7 +350,7 @@ pub(crate) fn collect_basemap(
     outline: Rgba,
     ppp: f32,
     map_per_px: f64,
-) -> Result<(), ()> {
+) -> Result<(), TessError> {
     let (mut v, mut i) = (Vec::new(), Vec::new());
     extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(land), map_per_px))?;
     if outline.a() > 0 {
@@ -355,7 +370,7 @@ pub(crate) fn collect_graticule(
     grat: Rgba,
     ppp: f32,
     map_per_px: f64,
-) -> Result<(), ()> {
+) -> Result<(), TessError> {
     let (mut v, mut i) = (Vec::new(), Vec::new());
     extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), 0.6 * ppp, map_per_px))?;
     if !i.is_empty() {
@@ -446,6 +461,20 @@ mod tests {
         let (v, i) = stroke_rings(&polys, [0.0, 0.0], [0.0; 4], 0.2, 0.0).expect("stroke").expect("non-empty");
         assert!(!i.is_empty());
         assert!(v.iter().all(|x| x.stroke_px == 0.2), "polygon outlines keep their exact width");
+    }
+
+    #[test]
+    fn stroke_round_joints_are_finely_subdivided() {
+        // A 90° arc stroked at width 1.0: with tolerance 0.005 the join is a real curve
+        // (~8 vertices), not the ~1–2 of lyon's default 0.1 tolerance (~74° steps).
+        let arc: Vec<Coord> = (0..=9)
+            .map(|i| {
+                let a = std::f64::consts::FRAC_PI_2 * i as f64 / 9.0;
+                Coord::new(a.cos() * 100.0, a.sin() * 100.0)
+            })
+            .collect();
+        let (v, _) = stroke_lines(&[arc], [0.0, 0.0], [0.0; 4], 2.0, 0.0).expect("stroke").expect("non-empty");
+        assert!(v.len() >= 40, "round join subdivided finely: {} vertices", v.len());
     }
 
     #[test]
