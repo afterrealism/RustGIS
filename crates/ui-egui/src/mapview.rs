@@ -82,6 +82,8 @@ pub struct MapView {
     /// A map or layout waiting for the user to confirm its deletion.
     pub deleting: Option<Deletion>,
     pub pointer_lonlat: Option<Coord>,
+    /// Where the map's context menu was opened: the pointer leaves the map for the menu.
+    pub menu_lonlat: Option<Coord>,
     pub dms: bool,
     pub render_ms: u64,
     pub notices_seen: usize,
@@ -122,6 +124,7 @@ impl Default for MapView {
             popup: None,
             deleting: None,
             pointer_lonlat: None,
+            menu_lonlat: None,
             dms: false,
             render_ms: 0,
             notices_seen: 0,
@@ -752,8 +755,11 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             }
         }
     }
+    if resp.secondary_clicked() {
+        app.map.menu_lonlat = app.map.pointer_lonlat;
+    }
     resp.context_menu(|ui| {
-        let c = app.map.pointer_lonlat;
+        let c = app.map.menu_lonlat;
         if ui.button(tl!("Zoom In")).clicked() {
             let _ = app.run("map.zoomIn", Value::Null);
             ui.close();

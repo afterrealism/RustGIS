@@ -1,8 +1,10 @@
 //! L5: the AI assistant. A chat agent that answers questions about the map and acts on it by
 //! running RustGIS commands and geoprocessing tools, through a model of the user's choosing
-//! (Anthropic, OpenAI, Gemini, OpenRouter, Ollama or any OpenAI-compatible server).
+//! (Anthropic, OpenAI, a ChatGPT account, Gemini, OpenRouter, Ollama or any OpenAI-compatible
+//! server).
 //!
-//! - [`provider`]: the three wire formats, as plain request/response data.
+//! - [`provider`]: the four wire formats, as plain request/response data.
+//! - [`chatgpt`]: signing in with ChatGPT, so the user's ChatGPT plan is used instead of a key.
 //! - [`tools`]: what the model may call, and which calls need the user's approval.
 //! - [`agent`]: the conversation loop, without I/O, so the desktop (a thread), the browser
 //!   (`fetch`), the command line and the tests drive the same code.
@@ -12,7 +14,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod agent;
+pub mod chatgpt;
 pub mod docs;
+pub mod error;
+pub use error::{Error, Recovery};
 pub mod framing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;

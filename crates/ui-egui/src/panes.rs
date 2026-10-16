@@ -20,12 +20,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     let frame = egui::Frame::NONE.fill(t.pane).inner_margin(egui::Margin::ZERO);
     if let Some(left) = app.ui.left {
         egui::Panel::left("left_pane").resizable(true).default_size(270.0).size_range(200.0..=480.0).frame(frame).show(ui, |ui| {
-            let (title, close) = match left {
-                LeftPane::Contents => ("Layers", "ui.pane.contents"),
-                LeftPane::Catalog => ("Browser", "ui.pane.catalog"),
-                LeftPane::Sources => ("Data Sources", "ui.pane.sources"),
-            };
-            pane_header(app, ui, tl!(title), close, &t);
+            left_header(app, ui, left, &t);
             match left {
                 LeftPane::Contents => contents(app, ui, &t),
                 LeftPane::Catalog => catalog(app, ui, &t),
@@ -94,12 +89,23 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
 }
 
 fn pane_header(app: &mut RustGisApp, ui: &mut Ui, title: &str, close: &str, t: &Tokens) {
+    let r = header_strip(ui, t);
+    ui.painter().text(pos2(r.min.x + 12.0, r.center().y), Align2::LEFT_CENTER, title, semibold(13.5), t.text);
+    close_button(app, ui, r, close, title, t);
+}
+
+/// The 34 px band a pane header sits on.
+fn header_strip(ui: &mut Ui, t: &Tokens) -> Rect {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
     ui.painter().rect_filled(r, 0.0, t.pane_header);
     ui.painter().line_segment([pos2(r.min.x, r.max.y - 0.5), pos2(r.max.x, r.max.y - 0.5)], Stroke::new(1.0, t.border));
-    ui.painter().text(pos2(r.min.x + 12.0, r.center().y), Align2::LEFT_CENTER, title, semibold(13.5), t.text);
+    r
+}
+
+/// The ✕ at the right end of a pane header `r`, running `close`.
+fn close_button(app: &mut RustGisApp, ui: &mut Ui, r: Rect, close: &str, salt: &str, t: &Tokens) {
     let cr = Rect::from_center_size(pos2(r.max.x - 18.0, r.center().y), vec2(22.0, 22.0));
-    let resp = ui.interact(cr, egui::Id::new(("pane_close", title)), Sense::click());
+    let resp = ui.interact(cr, egui::Id::new(("pane_close", salt)), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(cr, CornerRadius::same(4), t.hover);
     }
@@ -107,6 +113,56 @@ fn pane_header(app: &mut RustGisApp, ui: &mut Ui, title: &str, close: &str, t: &
     if resp.on_hover_text(tl!("Close")).clicked() {
         let _ = app.run(close, Value::Null);
     }
+}
+
+/// The left panes, each with its icon and the command that opens it (#299).
+const LEFT_PANES: [(LeftPane, &str, &str, &str); 3] = [
+    (LeftPane::Contents, "Layers", "contents", "ui.pane.contents"),
+    (LeftPane::Catalog, "Browser", "catalog", "ui.pane.catalog"),
+    (LeftPane::Sources, "Data Sources", "web_map", "ui.pane.sources"),
+];
+
+/// The left pane's header: a tab per left pane (so each is a click away, not only in
+/// View › Windows) and the ✕. A tab opens its pane through the same `ui.pane.*` command as the
+/// ribbon; the open pane's tab does nothing, so a tab never closes the side. Too narrow for the
+/// names (a small pane, a long translation), the tabs show their icons, named on hover.
+fn left_header(app: &mut RustGisApp, ui: &mut Ui, left: LeftPane, t: &Tokens) {
+    let r = header_strip(ui, t);
+    let pad = 9.0;
+    let names: Vec<&str> = LEFT_PANES.iter().map(|p| tl!(p.1)).collect();
+    let widths: Vec<f32> = names.iter().map(|n| crate::widgets::text_w(ui, n, semibold(12.5)) + 2.0 * pad).collect();
+    // Room left of the ✕, with the gaps between tabs.
+    let room = r.width() - 6.0 - 36.0 - 2.0 * (LEFT_PANES.len() as f32 - 1.0);
+    let icons_only = widths.iter().sum::<f32>() > room;
+    let mut x = r.min.x + 6.0;
+    for (i, (((pane, _, icon, open), name), width)) in LEFT_PANES.iter().zip(names).zip(widths).enumerate() {
+        let w = if icons_only { 32.0 } else { width };
+        let tr = Rect::from_min_size(pos2(x, r.min.y), vec2(w, r.height()));
+        let on = *pane == left;
+        let mut resp = ui.interact(tr, egui::Id::new(("left_pane_tab", i)), Sense::click());
+        // Named and marked open for screen readers (and scripted clicks), icons or not.
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, name));
+        let p = ui.painter();
+        if resp.hovered() && !on {
+            p.rect_filled(tr.shrink2(vec2(1.0, 5.0)), CornerRadius::same(4), t.hover);
+        }
+        let ink = if on { t.text } else { t.text_dim };
+        if icons_only {
+            icons::paint(p, Rect::from_center_size(tr.center(), vec2(18.0, 18.0)), icon, ink, t.accent);
+            resp = resp.on_hover_text(name);
+        } else {
+            p.text(tr.center(), Align2::CENTER_CENTER, name, if on { semibold(12.5) } else { regular(12.5) }, ink);
+        }
+        if on {
+            p.line_segment([pos2(tr.min.x + 4.0, r.max.y - 1.5), pos2(tr.max.x - 4.0, r.max.y - 1.5)], Stroke::new(2.0, t.accent));
+        }
+        if resp.clicked() && !on {
+            let _ = app.run(open, Value::Null);
+        }
+        x += w + 2.0;
+    }
+    let close = LEFT_PANES.iter().find(|p| p.0 == left).map_or("ui.pane.contents", |p| p.3);
+    close_button(app, ui, r, close, "left", t);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -594,6 +650,18 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                             let _ = app.run("map.activate", json!({"name": m}));
                         }
                         resp.context_menu(|ui| {
+                            if ui.button(tl!("Rename…")).clicked() {
+                                let _ = app.run("ui.dialog", json!({"name": "renameMap", "target": m}));
+                                ui.close();
+                            }
+                            // The copy comes into view, out of an open layout like a map tab.
+                            if ui.button(tl!("Duplicate")).clicked() {
+                                if app.run("map.duplicate", json!({"map": m})).is_ok() {
+                                    let _ = app.run("layout.close", Value::Null);
+                                    app.map.popup = None;
+                                }
+                                ui.close();
+                            }
                             if ui.button(tl!("Delete")).clicked() {
                                 app.map.deleting = Some(crate::mapview::Deletion::Map(m.clone()));
                                 ui.close();
@@ -651,6 +719,17 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                                 app.ui.tab = "Publish".into();
                             }
                             resp.context_menu(|ui| {
+                                if ui.button(tl!("Rename…")).clicked() {
+                                    let _ = app.run("ui.dialog", json!({"name": "renameLayout", "target": n}));
+                                    ui.close();
+                                }
+                                // The copy opens, on the Publish tab like a click on a layout.
+                                if ui.button(tl!("Duplicate")).clicked() {
+                                    if app.run("layout.duplicate", json!({"layout": n})).is_ok() {
+                                        app.ui.tab = "Publish".into();
+                                    }
+                                    ui.close();
+                                }
                                 if ui.button(tl!("Delete")).clicked() {
                                     app.map.deleting = Some(crate::mapview::Deletion::Layout(n.clone()));
                                     ui.close();

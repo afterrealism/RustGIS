@@ -105,6 +105,7 @@ AI provider	KI-Anbieter
 Alignment	Ausrichtung
 All	Alle
 All categories	Alle Kategorien
+All classes	Alle Klassen
 All files	Alle Dateien
 All Selected	Alle ausgewählten
 All steps done.	Alle Schritte erledigt.
@@ -413,8 +414,10 @@ Data Design	Datenentwurf
 Data Engineering	Data Engineering
 Data Interop	Datenaustausch
 Data Management	Datenverwaltung
+Data Sources	Datenquellen
 Data Stores	Datenspeicher
 Data type	Datentyp
+Data\nSources	Daten-\nquellen
 Data…	Daten…
 Day and night shading for a time.	Tag-und-Nacht-Schattierung für einen Zeitpunkt.
 Decline	Ablehnen
@@ -503,6 +506,9 @@ Drawing	Zeichnen
 Drawing Effects	Zeicheneffekte
 Drawing Mode	Zeichenmodus
 Drawing Order	Zeichenreihenfolge
+Duplicate	Duplizieren
+Duplicate Layout	Layout duplizieren
+Duplicate Map	Karte duplizieren
 Dusk	Dämmerung
 Dynamic\nText	Dynamischer\nText
 Dynamic Picture	Dynamisches Bild
@@ -745,6 +751,7 @@ Hide	Ausblenden
 Hide features far from the view's centre.	Objekte weit entfernt vom Ansichtszentrum ausblenden.
 Hide labels when the viewer is closer than this.	Beschriftungen ausblenden, wenn der Betrachter näher ist.
 Hide labels when the viewer is farther than this.	Beschriftungen ausblenden, wenn der Betrachter weiter entfernt ist.
+Hide other values	Andere Werte ausblenden
 Hide walls facing away from you.	Von Ihnen abgewandte Wände ausblenden.
 High values of the first raster and low values of the second score best.	Hohe Werte des ersten und niedrige Werte des zweiten Rasters schneiden am besten ab.
 Histogram Equalize	Histogrammausgleich
@@ -1083,6 +1090,7 @@ not needed	nicht erforderlich
 Not saved yet	Noch nicht gespeichert
 Notebook	Notizbuch
 Notebook Pane	Notizbuchbereich
+Nothing named {name} to rename	Nichts mit dem Namen {name} zum Umbenennen
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	Noch nichts geteilt. Veröffentlichen › Teilen als erstellt Webkarten, Layer, Stile, Szenen und mehr.
 Now	Jetzt
 Nulls	Nullwerte
@@ -1890,3 +1898,41 @@ Stop MCP relay	MCP-Relay stoppen
 MCP relay is already listening on 127.0.0.1:{port}; stop it first to use port {asked}	MCP-Relay hört bereits auf 127.0.0.1:{port}; stoppen Sie es zuerst, um Port {asked} zu nutzen
 Opening {url}…	{url} wird geöffnet…
 {url}: downloaded after another project was opened, so it wasn't opened	{url}: erst heruntergeladen, nachdem ein anderes Projekt geöffnet wurde, daher nicht geöffnet
+ChatGPT (sign in)	ChatGPT (Anmeldung)
+Account	Konto
+Waiting for the browser…	Warte auf den Browser…
+signed in	angemeldet
+Sign out	Abmelden
+Signing in with ChatGPT works in the desktop app.	Die Anmeldung mit ChatGPT funktioniert in der Desktop-App.
+The sign-in is kept in the app's settings folder, for your user account only, and never in a project file.	Die Anmeldung wird im Einstellungsordner der App gespeichert, nur für Ihr Benutzerkonto und nie in einer Projektdatei.
+Sign in with your ChatGPT account.	Melden Sie sich mit Ihrem ChatGPT-Konto an.
+A ChatGPT sign-in can only be used with the OpenAI API.	Eine ChatGPT-Anmeldung kann nur mit der OpenAI-API verwendet werden.
+Continue with ChatGPT	Mit ChatGPT fortfahren
+Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	Berechtigte Anfragen in RustGIS nutzen Ihren ChatGPT-Tarif. Die Nutzung verwalten Sie in den ChatGPT-Einstellungen.
+Got it	Verstanden
+Manage usage	Nutzung verwalten
+Requests go to the OpenAI API and use your ChatGPT plan.	Anfragen gehen an die OpenAI-API und nutzen Ihren ChatGPT-Tarif.
+Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Auf diesem Computer abgemeldet, aber OpenAI hat es nicht bestätigt. Sie können RustGIS in den ChatGPT-Einstellungen trennen.
+Using ChatGPT plan	ChatGPT-Tarif wird verwendet
+You're using your ChatGPT plan	Sie nutzen Ihren ChatGPT-Tarif
+Use another account	Anderes Konto verwenden
+Weekly usage	Wöchentliche Nutzung
+Open browser again	Browser erneut öffnen
+Copy sign-in link	Anmeldelink kopieren
+Sign in to choose a model.	Melden Sie sich an, um ein Modell auszuwählen.
+Choose an account	Konto auswählen
+Diagnostics	Diagnose
+No models are available for this account.	Für dieses Konto sind keine Modelle verfügbar.
+The reply stopped before completion; no actions were run.	Die Antwort wurde vorzeitig beendet; es wurden keine Aktionen ausgeführt.
+The sign-in expired or was revoked. Sign in again.	Die Anmeldung ist abgelaufen oder wurde widerrufen. Melden Sie sich erneut an.
+The saved sign-in changed. Select your account again.	Die gespeicherte Anmeldung hat sich geändert. Wählen Sie Ihr Konto erneut aus.
+Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	Erlauben Sie bei der Anmeldung die Nutzung Ihres ChatGPT-Abos. Wenn Ihr Workspace das nicht zulässt, wenden Sie sich an dessen Admin oder wählen Sie einen Anbieter mit API-Schlüssel.
+Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Zeitüberschreitung bei der Anmeldung. Starten Sie erneut und erlauben Sie dem Browser den Zugriff auf die Loopback-Adresse dieses Computers.
+Sign-in cancelled.	Anmeldung abgebrochen.
+ChatGPT sign-in failed. Check the connection and local settings, then try again.	ChatGPT-Anmeldung fehlgeschlagen. Prüfen Sie die Verbindung und die lokalen Einstellungen und versuchen Sie es erneut.
+Check the integration's client, permissions, workspace policy and route configuration.	Prüfen Sie Client, Berechtigungen, Arbeitsbereichsrichtlinien und Routenkonfiguration der Integration.
+This request uses an unsupported capability. Check the parameter and change the request.	Diese Anfrage verwendet eine nicht unterstützte Funktion. Prüfen Sie den Parameter und ändern Sie die Anfrage.
+ChatGPT plan use is unavailable for this account or workspace.	Die Nutzung eines ChatGPT-Abos ist für dieses Konto oder diesen Arbeitsbereich nicht verfügbar.
+A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	Ein Nutzungslimit des ChatGPT-Abos oder der App wurde erreicht. Prüfen Sie die wöchentliche Nutzung vor einem erneuten Versuch.
+ChatGPT usage is temporarily unavailable. Keep your sign-in and try again later.	Die ChatGPT-Nutzung ist vorübergehend nicht verfügbar. Bleiben Sie angemeldet und versuchen Sie es später erneut.
+This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Dieses ChatGPT-Konto war bereits gespeichert. Wählen Sie es nächstes Mal in der Liste, statt es erneut hinzuzufügen.

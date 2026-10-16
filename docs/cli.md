@@ -63,15 +63,20 @@ rustgis-cli ask --sample "Which 5 countries have the largest GDP?"
 rustgis-cli ask --sample "Buffer the cities by 200 km and label them" --save buffered.rgis
 rustgis-cli ask --data parcels.geojson --provider ollama --model qwen3:8b "Summarise the fields"
 rustgis-cli ask --models --provider openai          # the provider's models
+rustgis-cli ask --login                             # sign in with ChatGPT to use your ChatGPT plan
+rustgis-cli ask --sample --provider chatgpt "Zoom to Tokyo"
 ```
 
-The provider is `--provider` (`anthropic`, `openai`, `gemini`, `openrouter`, `ollama`, `custom`),
-else `RUSTGIS_ASSISTANT_PROVIDER`, else the first with a key in the environment, else Ollama.
+The provider is `--provider` (`anthropic`, `openai`, `chatgpt`, `gemini`, `openrouter`, `ollama`, `custom`),
+else `RUSTGIS_ASSISTANT_PROVIDER`, else the first with a key in the environment, else Ollama (a
+ChatGPT sign-in is used only when chosen).
 `--model` and `--base-url` override the defaults. The answer goes to standard output and each
 command the assistant ran to standard error. Commands that read or write files or use the
 network are declined unless you pass `--yes`; plugin commands, scripts, tasks, models and
 replacing the project are always declined here. `--trace log.txt` appends each request and response
-body (never the headers, which carry the key) to a file.
+body (never the headers, which carry the key) to a file. `--login` signs in with ChatGPT in
+the browser, so `--provider chatgpt` uses your ChatGPT plan (`--another-account` registers RustGIS
+for a different account), and `--logout` signs out; see [Signing in with ChatGPT](user-guide/assistant.md#signing-in-with-chatgpt).
 
 ## Serving AI agents
 

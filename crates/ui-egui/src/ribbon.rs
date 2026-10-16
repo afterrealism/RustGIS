@@ -334,9 +334,23 @@ fn home_tab(app: &mut RustGisApp, ui: &mut Ui) {
                 ui.label(egui::RichText::new(tl!("No bookmarks yet")).weak());
             }
             for n in names {
-                if ui.button(n.as_str()).clicked() {
+                // The name goes to the bookmark; the button at the right removes it.
+                let (go, remove) = egui::Sides::new().show(
+                    ui,
+                    |ui| ui.add(egui::Button::new(n.as_str()).frame(false).min_size(vec2(0.0, 26.0))).clicked(),
+                    |ui| {
+                        let tip = crate::i18n::fmt("Remove {name}", &[("name", &n)]);
+                        let r = crate::widgets::icon_button(ui, "delete", &tip);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &tip));
+                        r.clicked()
+                    },
+                );
+                if go {
                     let _ = app.run("bookmark.go", json!({"name": n}));
                     ui.close();
+                }
+                if remove {
+                    let _ = app.run("bookmark.remove", json!({"name": n}));
                 }
             }
             ui.separator();
@@ -344,6 +358,8 @@ fn home_tab(app: &mut RustGisApp, ui: &mut Ui) {
                 let _ = app.run("ui.dialog", json!({"name": "bookmark"}));
                 ui.close();
             }
+            menu_item(ui, app, "open", "Import Bookmarks…", "ui.openItem", json!({"kind": "bookmarks"}));
+            menu_item(ui, app, "save", "Export Bookmarks…", "ui.saveItem", json!({"kind": "bookmarks"}));
         });
         col(ui, |ui| {
             small(ui, app, "zoom_full", "Full Extent", "Zoom to the extent of all layers.", "map.zoomFull", Value::Null, false);

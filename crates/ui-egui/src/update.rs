@@ -1,7 +1,7 @@
 //! Help › Check for Updates: asks GitHub for the latest release and compares it with this build.
 //! Nothing is sent until the user asks.
 
-use egui::{Align2, vec2};
+use egui::Align2;
 use serde_json::Value;
 
 use crate::{RustGisApp, Slot};
@@ -121,7 +121,8 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
             ui.set_width(380.0);
             if cfg!(target_arch = "wasm32") {

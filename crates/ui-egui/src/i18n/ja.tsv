@@ -105,6 +105,7 @@ AI provider	AI プロバイダー
 Alignment	配置
 All	すべて
 All categories	すべてのカテゴリ
+All classes	すべてのクラス
 All files	すべてのファイル
 All Selected	すべて選択済み
 All steps done.	すべてのステップが完了しました。
@@ -413,8 +414,10 @@ Data Design	データ設計
 Data Engineering	データ エンジニアリング
 Data Interop	データ相互運用
 Data Management	データ管理
+Data Sources	データ ソース
 Data Stores	データ ストア
 Data type	データ型
+Data\nSources	データ\nソース
 Data…	データ…
 Day and night shading for a time.	指定時刻の昼夜の陰影。
 Decline	拒否
@@ -503,6 +506,9 @@ Drawing	描画
 Drawing Effects	描画効果
 Drawing Mode	描画モード
 Drawing Order	描画順序
+Duplicate	複製
+Duplicate Layout	レイアウトの複製
+Duplicate Map	マップの複製
 Dusk	夕暮れ
 Dynamic\nText	動的\nテキスト
 Dynamic Picture	動的画像
@@ -745,6 +751,7 @@ Hide	非表示
 Hide features far from the view's centre.	ビューの中心から遠いフィーチャを非表示にします。
 Hide labels when the viewer is closer than this.	視点がこれより近いときにラベルを非表示にします。
 Hide labels when the viewer is farther than this.	視点がこれより遠いときにラベルを非表示にします。
+Hide other values	その他の値を隠す
 Hide walls facing away from you.	背を向けた壁を非表示にします。
 High values of the first raster and low values of the second score best.	1 つ目のラスターの高い値と 2 つ目のラスターの低い値が最も高いスコアになります。
 Histogram Equalize	ヒストグラム均等化
@@ -1083,6 +1090,7 @@ not needed	不要
 Not saved yet	未保存
 Notebook	ノートブック
 Notebook Pane	ノートブック ウィンドウ
+Nothing named {name} to rename	名前を変更する {name} という項目はありません
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	まだ何も共有していません。[公開] › [共有形式] で Web マップ、レイヤー、スタイル、シーンなどを作成します。
 Now	現在
 Nulls	Null
@@ -1890,3 +1898,41 @@ Stop MCP relay	MCPリレーを停止
 MCP relay is already listening on 127.0.0.1:{port}; stop it first to use port {asked}	MCPリレーは既に127.0.0.1:{port}で待機中です。ポート{asked}を使うには先に停止してください
 Opening {url}…	{url} を開いています…
 {url}: downloaded after another project was opened, so it wasn't opened	{url}: 別のプロジェクトを開いた後にダウンロードされたため、開きませんでした
+ChatGPT (sign in)	ChatGPT（サインイン）
+Account	アカウント
+Waiting for the browser…	ブラウザーを待っています…
+signed in	サインイン済み
+Sign out	サインアウト
+Signing in with ChatGPT works in the desktop app.	ChatGPT でのサインインはデスクトップアプリで使えます。
+The sign-in is kept in the app's settings folder, for your user account only, and never in a project file.	サインイン情報はアプリの設定フォルダーに、あなたのユーザーアカウント専用で保存され、プロジェクトファイルには保存されません。
+Sign in with your ChatGPT account.	ChatGPT アカウントでサインインしてください。
+A ChatGPT sign-in can only be used with the OpenAI API.	ChatGPT のサインインは OpenAI API でのみ使用できます。
+Continue with ChatGPT	ChatGPT で続ける
+Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	RustGIS の対象となるリクエストには ChatGPT プランが使われます。使用量は ChatGPT の設定で管理できます。
+Got it	OK
+Manage usage	使用量を管理
+Requests go to the OpenAI API and use your ChatGPT plan.	リクエストは OpenAI API に送られ、ChatGPT プランが使われます。
+Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	このコンピューターではサインアウトしましたが、OpenAI による確認は取れませんでした。ChatGPT の設定で RustGIS の接続を解除できます。
+Using ChatGPT plan	ChatGPT プランを使用中
+You're using your ChatGPT plan	ChatGPT プランを使用しています
+Use another account	別のアカウントを使用
+Weekly usage	週間使用量
+Open browser again	ブラウザーを再度開く
+Copy sign-in link	サインインリンクをコピー
+Sign in to choose a model.	サインインしてモデルを選択してください。
+Choose an account	アカウントを選択
+Diagnostics	診断情報
+No models are available for this account.	このアカウントで利用できるモデルはありません。
+The reply stopped before completion; no actions were run.	応答が完了前に停止しました。操作は実行されていません。
+The sign-in expired or was revoked. Sign in again.	サインインの有効期限が切れたか、取り消されました。再度サインインしてください。
+The saved sign-in changed. Select your account again.	保存されたサインイン情報が変更されました。アカウントを再度選択してください。
+Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	サインイン時に ChatGPT プランの使用を許可してください。ワークスペースで許可されていない場合は、管理者に確認するか、API キーを使うプロバイダーを選んでください。
+Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	サインインがタイムアウトしました。最初からやり直し、ブラウザーがこのコンピューターのループバックアドレスに接続できるようにしてください。
+Sign-in cancelled.	サインインをキャンセルしました。
+ChatGPT sign-in failed. Check the connection and local settings, then try again.	ChatGPT へのサインインに失敗しました。接続とローカル設定を確認してから再試行してください。
+Check the integration's client, permissions, workspace policy and route configuration.	連携のクライアント、権限、ワークスペースのポリシー、ルート設定を確認してください。
+This request uses an unsupported capability. Check the parameter and change the request.	このリクエストは未対応の機能を使用しています。パラメーターを確認してリクエストを変更してください。
+ChatGPT plan use is unavailable for this account or workspace.	このアカウントまたはワークスペースでは ChatGPT プランを使用できません。
+A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	ChatGPT プランまたはアプリの使用上限に達しました。週間使用量を確認してから再試行してください。
+ChatGPT usage is temporarily unavailable. Keep your sign-in and try again later.	ChatGPT の使用状況を一時的に確認できません。サインイン状態を維持して後で再試行してください。
+This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	この ChatGPT アカウントはすでに保存されています。次回は再度追加せず、一覧から選んでください。

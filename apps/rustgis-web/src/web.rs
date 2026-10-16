@@ -489,7 +489,8 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
 /// Makes an HTTP request (the AI assistant's calls to its model), returning the response of any
 /// status.
 async fn http(req: rustgis_ui_egui::rustgis_assistant::HttpRequest) -> Result<rustgis_ui_egui::rustgis_assistant::HttpResponse, String> {
-    use rustgis_ui_egui::rustgis_assistant::provider::{MAX_RESPONSE, allowed_url};
+    use rustgis_ui_egui::rustgis_assistant::provider::{allowed_url, reply_limit};
+    let limit = reply_limit(&req);
     let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
     if !allowed_url(&req.url) {
         return Err(format!("{}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed", req.url));
@@ -514,18 +515,19 @@ async fn http(req: rustgis_ui_egui::rustgis_assistant::HttpRequest) -> Result<ru
         .dyn_into()
         .map_err(err)?;
     let status = resp.status();
+    let request_id = resp.headers().get("x-request-id").ok().flatten();
     // Too large by its header: refused before it is read.
     if let Ok(Some(len)) = resp.headers().get("content-length").map(|v| v.and_then(|s| s.parse::<u64>().ok()))
-        && len > MAX_RESPONSE as u64
+        && len > limit as u64
     {
         return Err(format!("{len} bytes is too large"));
     }
     let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().map_err(err)?).await.map_err(err)?;
     let bytes = js_sys::Uint8Array::new(&buf);
-    if bytes.length() as usize > MAX_RESPONSE {
+    if bytes.length() as usize > limit {
         return Err(format!("{} bytes is too large", bytes.length()));
     }
-    Ok(rustgis_ui_egui::rustgis_assistant::HttpResponse { status, body: bytes.to_vec() })
+    Ok(rustgis_ui_egui::rustgis_assistant::HttpResponse { status, body: bytes.to_vec(), request_id })
 }
 
 /// The browser's services. Embedded, settings live in memory for the visit: the page that embeds
@@ -601,7 +603,19 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
             } else if purpose == "item" {
                 rfd::AsyncFileDialog::new().add_filter(
                     "RustGIS items",
-                    &["rgismap", "rgismpk", "rgispkg", "rgislyr", "rgisstyle", "rgisramp", "rgistemplate", "rgistask", "rgis", "rgisx"],
+                    &[
+                        "rgismap",
+                        "rgismpk",
+                        "rgispkg",
+                        "rgislyr",
+                        "rgisstyle",
+                        "rgisramp",
+                        "rgistemplate",
+                        "rgistask",
+                        "rgisbookmarks",
+                        "rgis",
+                        "rgisx",
+                    ],
                 )
             } else if purpose == "ramp" {
                 rfd::AsyncFileDialog::new().add_filter("Colour ramps", &["rgisramp", "xml", "qml", "txt", "clr", "cpt"])
@@ -642,7 +656,7 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
         http: Some(Box::new(move |req, slot| {
             let ctx = http_ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let r = http(req).await;
+                let r = http(req).await.map_err(Into::into);
                 *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
                 ctx.request_repaint();
             });

@@ -1,6 +1,8 @@
 //! Home › Navigate, Add (basemap) and Data › Project (new map), bookmarks.
 
 use rustgis_geom::{Coord, Extent};
+use rustgis_map::layout::ElementKind;
+use rustgis_map::presentation::PageKind;
 use rustgis_map::{Basemap, Bookmark, Map, Projection};
 use serde_json::{Value, json};
 
@@ -88,6 +90,11 @@ pub fn commands() -> Vec<C> {
             if m.bookmarks.len() == before { Err(format!("no bookmark '{n}'")) } else { Ok(Value::Null) }
         })
         .params(r#"{"name": string}"#),
+        C::new("bookmark.save", "Export Bookmarks", "Home › Navigate › Bookmarks", |s, p| super::items::save_item(s, "bookmarks", p))
+            .view()
+            .params(r#"{"path": "*.rgisbookmarks"}"#),
+        C::new("bookmark.import", "Import Bookmarks", "Home › Navigate › Bookmarks", import_bookmarks)
+            .params(r#"{"path"?: "*.rgisbookmarks", "text"?: bookmarks JSON, "data"?: base64 file}"#),
         C::new("map.new", "New Map", "Data › Project", new_map).params(r#"{"name"?: string}"#),
         C::new("map.activate", "Activate Map", "Browser", |s, p| {
             let n = s_name(p)?;
@@ -104,22 +111,19 @@ pub fn commands() -> Vec<C> {
             if n.is_empty() {
                 return Err("name is required".into());
             }
-            let base: String = n.chars().take(200).collect();
+            let i = map_at(s, p)?;
+            let old = s.project.maps.get(i).map(|m| m.name.clone()).ok_or("no map")?;
             // Unique among the other maps, so a name finds one map (tabs, Browser, map frames).
-            let active = s.project.active_map;
-            let taken = |n: &str| s.project.maps.iter().enumerate().any(|(j, m)| j != active && m.name.eq_ignore_ascii_case(n));
-            let mut name = base.clone();
-            let mut k = 1;
-            while taken(&name) {
-                k += 1;
-                // The number fits in the 200 characters a name keeps.
-                let suffix = format!(" {k}");
-                name = base.chars().take(200usize.saturating_sub(suffix.len())).chain(suffix.chars()).collect();
+            let name = super::numbered(n, |n| s.project.maps.iter().enumerate().any(|(j, m)| j != i && m.name.eq_ignore_ascii_case(n)));
+            if let Some(m) = s.project.maps.get_mut(i) {
+                m.name = name.clone();
             }
-            s.map_mut().name = name.clone();
+            follow_renamed_map(s, &old, &name);
             Ok(json!({"name": name}))
         })
-        .params(r#"{"name": string (the active map's new name; a number is added when another map has it)}"#),
+        .params(r#"{"name": string (the new name; a number is added when another map has it), "map"?: name (default: the active map)}"#),
+        C::new("map.duplicate", "Duplicate Map", "Browser", duplicate_map)
+            .params(r#"{"map"?: name (default: the active map), "name"?: string (default: "<map> copy"; a number is added when another map has it)}"#),
         C::new("map.remove", "Delete Map", "Browser", |s, p| {
             if s.project.maps.len() < 2 {
                 return Err("a project keeps at least one map".into());
@@ -144,6 +148,61 @@ pub fn commands() -> Vec<C> {
 
 fn s_name(p: &Value) -> Result<&str, String> {
     ps(p, "name").ok_or_else(|| "name is required".to_string())
+}
+
+/// The map `map` names (default: the active one). A `map` that isn't a name is an error, never
+/// the active map.
+fn map_at(s: &Session, p: &Value) -> Result<usize, String> {
+    match p.get("map") {
+        None | Some(Value::Null) => Ok(s.project.active_map),
+        Some(Value::String(m)) => s.project.maps.iter().position(|x| x.name.eq_ignore_ascii_case(m)).ok_or_else(|| format!("no map '{m}'")),
+        Some(_) => Err("map must be a map's name".into()),
+    }
+}
+
+/// A full copy of a map (#288), its data included, right after it and in view. Layer ids are per
+/// map, so the copy keeps them; layouts aren't copied and keep showing the original.
+fn duplicate_map(s: &mut Session, p: &Value) -> CmdResult {
+    let i = map_at(s, p)?;
+    let mut m = s.project.maps.get(i).ok_or("no map")?.clone();
+    m.name = super::copy_name(ps(p, "name"), &m.name, |n| s.project.maps.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
+    m.label_lock = None;
+    for l in &mut m.layers {
+        l.selection.clear();
+    }
+    let name = m.name.clone();
+    let was_active = i == s.project.active_map;
+    s.project.maps.insert(i + 1, m);
+    s.project.active_map = i + 1;
+    // The copy of the map in view keeps its active layer (same ids); another starts on its first.
+    if !was_active {
+        s.active_layer = s.map().layers.first().map(|l| l.id);
+        s.table_layer = None;
+    }
+    Ok(json!({"name": name}))
+}
+
+/// Points layout map frames, presentation map pages and offline areas at a renamed map (#287),
+/// so they keep finding it.
+fn follow_renamed_map(s: &mut Session, old: &str, new: &str) {
+    let renamed = |m: &mut String| {
+        if m.eq_ignore_ascii_case(old) {
+            *m = new.to_string();
+        }
+    };
+    for e in s.project.layouts.iter_mut().flat_map(|l| l.elements.iter_mut()) {
+        if let ElementKind::MapFrame { map, .. } = &mut e.kind {
+            renamed(map);
+        }
+    }
+    for page in s.project.presentations.iter_mut().flat_map(|p| p.pages.iter_mut()) {
+        if let PageKind::Map { map, .. } = &mut page.kind {
+            renamed(map);
+        }
+    }
+    for a in &mut s.project.offline_areas {
+        renamed(&mut a.map);
+    }
 }
 
 fn zoom_full(s: &mut Session, _: &Value) -> CmdResult {
@@ -219,6 +278,72 @@ fn go_bookmark(s: &mut Session, p: &Value) -> CmdResult {
     s.map_mut().camera = cam;
     s.record_extent();
     Ok(Value::Null)
+}
+
+/// Most bookmarks a map keeps from imported files.
+const MAX_BOOKMARKS: usize = 10_000;
+
+/// The map's bookmarks as a bookmarks file. Places are lon/lat and metres per pixel, so they
+/// open in the same place on a map in any projection.
+pub(crate) fn bookmarks_file(map: &Map) -> Result<Vec<u8>, String> {
+    if map.bookmarks.is_empty() {
+        return Err("the map has no bookmarks; save one with New Bookmark".into());
+    }
+    let flat = map.flat();
+    let marks: Vec<Value> = map
+        .bookmarks
+        .iter()
+        .filter_map(|b| {
+            let c = flat.inverse(b.camera.center)?;
+            Some(json!({"name": b.name, "lon": c.x, "lat": c.y, "metresPerPixel": b.camera.res * flat.ground_per_unit(b.camera.center)}))
+        })
+        .collect();
+    if marks.is_empty() {
+        return Err("none of the map's bookmarks has a place on the earth".into());
+    }
+    serde_json::to_vec_pretty(&json!({"type": "rustgisBookmarks", "bookmarks": marks})).map_err(|e| e.to_string())
+}
+
+fn import_bookmarks(s: &mut Session, p: &Value) -> CmdResult {
+    let text = super::items::read_text(p)?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS bookmarks file: {e}"))?;
+    let list = v.get("bookmarks").and_then(Value::as_array).ok_or("not a RustGIS bookmarks file: no bookmarks")?;
+    let m = s.map_mut();
+    let flat = m.flat();
+    let mut names = Vec::new();
+    for b in list.iter().take(MAX_BOOKMARKS) {
+        if m.bookmarks.len() >= MAX_BOOKMARKS {
+            break;
+        }
+        let name: String = match super::ps(b, "name").map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => n.chars().take(120).collect(),
+            None => continue,
+        };
+        let (Some(lon), Some(lat), Some(ground)) = (f(b, "lon"), f(b, "lat"), f(b, "metresPerPixel")) else { continue };
+        if !(lon.is_finite() && lat.is_finite() && (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat)) {
+            continue;
+        }
+        if !(ground.is_finite() && ground > 0.0) {
+            continue;
+        }
+        let Some(center) = flat.forward_checked(Coord::new(lon, lat)) else { continue };
+        let mut camera = m.camera;
+        camera.center = center;
+        camera.res = ground / flat.ground_per_unit(center).max(1e-9);
+        camera.clamp();
+        // A bookmark by the same name is replaced where it is in the list.
+        match m.bookmarks.iter_mut().find(|b| b.name.eq_ignore_ascii_case(&name)) {
+            Some(b) => b.camera = camera,
+            None => m.bookmarks.push(Bookmark { name: name.clone(), camera }),
+        }
+        if !names.iter().any(|n: &String| n.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
+        return Err("the file has no bookmarks this map can show".into());
+    }
+    Ok(json!({"added": names}))
 }
 
 fn new_map(s: &mut Session, p: &Value) -> CmdResult {

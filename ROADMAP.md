@@ -32,7 +32,7 @@ Many features are first versions: there are no full 3D scenes or enterprise port
 - Sharing as open formats (web maps, OGC API Features collections, MapLibre styles, glTF
   scenes, locators), offline areas with sync, deep learning pixel classification, hosted
   imagery tiles.
-- The AI Assistant (Anthropic, OpenAI, Gemini, OpenRouter, Ollama, OpenAI-compatible) in the
+- The AI Assistant (Anthropic, OpenAI, ChatGPT sign-in, Gemini, OpenRouter, Ollama, OpenAI-compatible) in the
   app, the web app and `rustgis-cli ask`; an MCP server (`rustgis-cli mcp`) for AI agents such
   as Claude Code, Cursor and VS Code, with the documentation built in.
 - Sandboxed WebAssembly plugins with a registry at plugins.rustgis.app.

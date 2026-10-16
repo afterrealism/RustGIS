@@ -105,7 +105,7 @@ pub struct Services {
     pub fetch: Option<Box<dyn Fn(&str, Slot<Result<Vec<u8>, String>>)>>,
     /// Makes an HTTP request (the AI assistant's calls to its model) and puts the response, of any
     /// status, in the slot (the browser's fetch; the desktop sends it on a thread).
-    pub http: Option<Box<dyn Fn(rustgis_assistant::HttpRequest, Slot<Result<rustgis_assistant::HttpResponse, String>>)>>,
+    pub http: Option<Box<dyn Fn(rustgis_assistant::HttpRequest, Slot<Result<rustgis_assistant::HttpResponse, rustgis_assistant::Error>>)>>,
 }
 
 /// A new private folder for one print job: unique, created fresh (never an existing path) and,
@@ -670,6 +670,7 @@ impl RustGisApp {
             (".cpt", "ramp.add"),
             (".rgistemplate", "project.fromTemplate"),
             (".rgistask", "task.import"),
+            (".rgisbookmarks", "bookmark.import"),
             (".rgisreport", "report.open"),
             (".rgisrpttemplate", "report.open"),
             (".rgispres", "presentation.import"),
@@ -1518,6 +1519,7 @@ impl RustGisApp {
                     "importStyles" => ("style.import", &["rgislyr", "rgismap", "rgis", "rgisx"], "RustGIS layers, maps and projects"),
                     "template" => ("project.fromTemplate", &["rgistemplate"], "RustGIS project template"),
                     "task" => ("task.import", &["rgistask"], "RustGIS task"),
+                    "bookmarks" => ("bookmark.import", &["rgisbookmarks"], "RustGIS bookmarks"),
                     "report" => ("report.open", &["rgisreport", "rgisrpttemplate"], "RustGIS report or report template"),
                     "presentation" => ("presentation.import", &["rgispres"], "RustGIS presentation"),
                     "notebook" => ("notebook.open", &["rgisnb", "ipynb"], "RustGIS or Jupyter notebook"),
@@ -1880,6 +1882,35 @@ impl RustGisApp {
                 if which == "graphicText" {
                     self.dialogs.a = p.get("lon").and_then(Value::as_f64).map(|v| v.to_string()).unwrap_or_default();
                     self.dialogs.b = p.get("lat").and_then(Value::as_f64).map(|v| v.to_string()).unwrap_or_default();
+                }
+                // Rename Map / Rename Layout remember which one (`target`, by name; default the
+                // one in view), so renaming another from the Browser leaves the view alone.
+                if matches!(which, "renameMap" | "renameLayout") {
+                    let target = p.get("target").and_then(Value::as_str);
+                    let pr = &self.session.project;
+                    let found = if which == "renameMap" {
+                        match target {
+                            Some(n) => pr.maps.iter().find(|m| m.name.eq_ignore_ascii_case(n)),
+                            None => pr.maps.get(pr.active_map),
+                        }
+                        .map(|m| m.name.clone())
+                    } else {
+                        match target {
+                            Some(n) => pr.layouts.iter().find(|l| l.name.eq_ignore_ascii_case(n)),
+                            None => self.session.active_layout.and_then(|i| pr.layouts.get(i)),
+                        }
+                        .map(|l| l.name.clone())
+                    };
+                    let Some(name) = found else {
+                        self.dialogs.open = None;
+                        // With no target, only Rename Layout can miss: no layout is open.
+                        return Err(match target {
+                            Some(n) => i18n::fmt("Nothing named {name} to rename", &[("name", n)]),
+                            None => tl!("open a layout first").to_string(),
+                        });
+                    };
+                    self.dialogs.a = name.clone();
+                    self.dialogs.text = name;
                 }
             }
             // Picks the image for a picture graphic whose corners were just dragged.

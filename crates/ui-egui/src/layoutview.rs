@@ -492,10 +492,23 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                 }
                 ui.end_row();
             }
-            ElementKind::Legend { title, .. } => {
+            ElementKind::Legend { title, all_classes, hide_other, .. } => {
                 ui.label(tl!("Title"));
                 if let Some(tt) = text_field(app, ui, (li, id, "title"), title, false) {
                     update(app, json!({"title": tt}));
+                }
+                ui.end_row();
+                // Off, the legend lists only what the frame draws (#207).
+                ui.label(tl!("All classes"));
+                let mut all = *all_classes;
+                if ui.checkbox(&mut all, "").changed() {
+                    update(app, json!({"allClasses": all}));
+                }
+                ui.end_row();
+                ui.label(tl!("Hide other values"));
+                let mut hide = *hide_other;
+                if ui.checkbox(&mut hide, "").changed() {
+                    update(app, json!({"hideOther": hide}));
                 }
                 ui.end_row();
             }

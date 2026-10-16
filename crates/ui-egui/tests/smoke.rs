@@ -820,3 +820,85 @@ fn save_project_dialog_needs_downloads() {
     assert_eq!(h.state().session.project.name, "World Atlas");
     assert!(h.state().session.dirty);
 }
+
+#[test]
+fn map_context_menu_copies_the_clicked_coordinates() {
+    let mut h = harness();
+    for _ in 0..4 {
+        h.step();
+    }
+    // Right-click the middle of the map.
+    let at = egui::pos2(700.0, 500.0);
+    h.input_mut().events.push(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+    }
+    for _ in 0..4 {
+        h.step();
+    }
+    // Moving onto the menu leaves the map: the item must stay.
+    h.get_by_label("Copy Coordinates").hover();
+    for _ in 0..4 {
+        h.step();
+    }
+    h.get_by_label("Copy Coordinates").click();
+    h.step();
+    let copied = h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t.contains(", ")));
+    assert!(copied, "nothing copied");
+}
+
+#[test]
+fn bookmarks_menu_removes_bookmarks() {
+    let mut h = harness();
+    h.state_mut().ui.tab = "Home".into();
+    for _ in 0..4 {
+        h.step();
+    }
+    let before = h.state().session.map().bookmarks.len();
+    h.get_by_label("Bookmarks").click();
+    for _ in 0..4 {
+        h.step();
+    }
+    h.get_by_label("Remove Europe").click();
+    for _ in 0..4 {
+        h.step();
+    }
+    let map = h.state().session.map();
+    assert_eq!(map.bookmarks.len(), before - 1);
+    assert!(!map.bookmarks.iter().any(|b| b.name == "Europe"));
+}
+
+#[test]
+fn dialogs_can_be_moved() {
+    let mut h = harness();
+    // A tab without a New Bookmark button: only the dialog's title matches.
+    h.state_mut().ui.tab = "Help".into();
+    let _ = h.state_mut().run("ui.dialog", json!({"name": "bookmark"}));
+    for _ in 0..4 {
+        h.step();
+    }
+    let before = h.get_by_label("New Bookmark").rect();
+    // Drag the title bar.
+    let from = before.left_top() + egui::vec2(150.0, 12.0);
+    let to = from + egui::vec2(-200.0, 120.0);
+    let press =
+        |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    h.input_mut().events.push(egui::Event::PointerMoved(from));
+    h.input_mut().events.push(press(from, true));
+    h.step();
+    for i in 1..=5 {
+        h.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 5.0)));
+        h.step();
+    }
+    h.input_mut().events.push(press(to, false));
+    for _ in 0..4 {
+        h.step();
+    }
+    let after = h.get_by_label("New Bookmark").rect();
+    assert!((after.left_top() - (before.left_top() + (to - from))).length() < 2.0, "{before:?} → {after:?}");
+}

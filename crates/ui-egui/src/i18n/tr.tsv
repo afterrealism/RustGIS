@@ -105,6 +105,7 @@ AI provider	YZ sağlayıcısı
 Alignment	Hizalama
 All	Tümü
 All categories	Tüm kategoriler
+All classes	Tüm sınıflar
 All files	Tüm dosyalar
 All Selected	Tüm Seçililer
 All steps done.	Tüm adımlar tamamlandı.
@@ -413,8 +414,10 @@ Data Design	Veri Tasarımı
 Data Engineering	Veri Mühendisliği
 Data Interop	Veri Birlikte Çalışabilirliği
 Data Management	Veri Yönetimi
+Data Sources	Veri Kaynakları
 Data Stores	Veri Depoları
 Data type	Veri türü
+Data\nSources	Veri\nKaynakları
 Data…	Veri…
 Day and night shading for a time.	Bir zaman için gece ve gündüz gölgelendirmesi.
 Decline	Reddet
@@ -503,6 +506,9 @@ Drawing	Çizim
 Drawing Effects	Çizim Efektleri
 Drawing Mode	Çizim Modu
 Drawing Order	Çizim Sırası
+Duplicate	Çoğalt
+Duplicate Layout	Sayfa Düzenini Çoğalt
+Duplicate Map	Haritayı Çoğalt
 Dusk	Alacakaranlık
 Dynamic\nText	Dinamik\nMetin
 Dynamic Picture	Dinamik Resim
@@ -745,6 +751,7 @@ Hide	Gizle
 Hide features far from the view's centre.	Görünümün merkezinden uzaktaki detayları gizle.
 Hide labels when the viewer is closer than this.	Görüntüleyen bundan daha yakındayken etiketleri gizle.
 Hide labels when the viewer is farther than this.	Görüntüleyen bundan daha uzaktayken etiketleri gizle.
+Hide other values	Diğer değerleri gizle
 Hide walls facing away from you.	Size dönük olmayan duvarları gizle.
 High values of the first raster and low values of the second score best.	İlk rasterin yüksek, ikincinin düşük değerleri en iyi puanı alır.
 Histogram Equalize	Histogram Eşitleme
@@ -1083,6 +1090,7 @@ not needed	gerekmiyor
 Not saved yet	Henüz kaydedilmedi
 Notebook	Not Defteri
 Notebook Pane	Not Defteri Paneli
+Nothing named {name} to rename	Yeniden adlandırılacak {name} adında bir öğe yok
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	Henüz paylaşılan bir şey yok. Yayımla › Farklı Paylaş web haritaları, katmanlar, stiller, sahneler ve daha fazlasını oluşturur.
 Now	Şimdi
 Nulls	Boş değerler
@@ -1890,3 +1898,41 @@ Stop MCP relay	MCP rölesini durdur
 MCP relay is already listening on 127.0.0.1:{port}; stop it first to use port {asked}	MCP rölesi zaten 127.0.0.1:{port} adresinde dinliyor; {asked} portunu kullanmak için önce durdurun
 Opening {url}…	{url} açılıyor…
 {url}: downloaded after another project was opened, so it wasn't opened	{url}: başka bir proje açıldıktan sonra indirildi, bu yüzden açılmadı
+ChatGPT (sign in)	ChatGPT (oturum aç)
+Account	Hesap
+Waiting for the browser…	Tarayıcı bekleniyor…
+signed in	oturum açık
+Sign out	Oturumu kapat
+Signing in with ChatGPT works in the desktop app.	ChatGPT ile oturum açma masaüstü uygulamasında çalışır.
+The sign-in is kept in the app's settings folder, for your user account only, and never in a project file.	Oturum, uygulamanın ayarlar klasöründe yalnızca kullanıcı hesabınız için saklanır, asla bir proje dosyasında saklanmaz.
+Sign in with your ChatGPT account.	ChatGPT hesabınızla oturum açın.
+A ChatGPT sign-in can only be used with the OpenAI API.	ChatGPT oturumu yalnızca OpenAI API ile kullanılabilir.
+Continue with ChatGPT	ChatGPT ile devam et
+Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	RustGIS'teki uygun istekler ChatGPT planınızı kullanır. Kullanımı ChatGPT ayarlarından yönetebilirsiniz.
+Got it	Anladım
+Manage usage	Kullanımı yönet
+Requests go to the OpenAI API and use your ChatGPT plan.	İstekler OpenAI API'ye gider ve ChatGPT planınızı kullanır.
+Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Bu bilgisayarda oturum kapatıldı, ancak OpenAI bunu onaylamadı. RustGIS'in bağlantısını ChatGPT ayarlarından kesebilirsiniz.
+Using ChatGPT plan	ChatGPT planı kullanılıyor
+You're using your ChatGPT plan	ChatGPT planınızı kullanıyorsunuz
+Use another account	Başka bir hesap kullan
+Weekly usage	Haftalık kullanım
+Open browser again	Tarayıcıyı yeniden aç
+Copy sign-in link	Oturum açma bağlantısını kopyala
+Sign in to choose a model.	Model seçmek için oturum açın.
+Choose an account	Hesap seçin
+Diagnostics	Tanılama
+No models are available for this account.	Bu hesap için kullanılabilir model yok.
+The reply stopped before completion; no actions were run.	Yanıt tamamlanmadan durdu; hiçbir işlem çalıştırılmadı.
+The sign-in expired or was revoked. Sign in again.	Oturumun süresi doldu veya erişim iptal edildi. Yeniden oturum açın.
+The saved sign-in changed. Select your account again.	Kayıtlı oturum değişti. Hesabınızı yeniden seçin.
+Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	Oturum açarken ChatGPT planının kullanılmasına izin verin. Çalışma alanınız buna izin vermiyorsa yöneticisine başvurun veya API anahtarlı bir sağlayıcı seçin.
+Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Oturum açma zaman aşımına uğradı. Yeniden başlayın ve tarayıcının bu bilgisayarın geri döngü adresine erişmesine izin verin.
+Sign-in cancelled.	Oturum açma iptal edildi.
+ChatGPT sign-in failed. Check the connection and local settings, then try again.	ChatGPT oturumu açılamadı. Bağlantıyı ve yerel ayarları kontrol edip yeniden deneyin.
+Check the integration's client, permissions, workspace policy and route configuration.	Entegrasyonun istemcisini, izinlerini, çalışma alanı politikasını ve yönlendirme yapılandırmasını kontrol edin.
+This request uses an unsupported capability. Check the parameter and change the request.	Bu istek desteklenmeyen bir özellik kullanıyor. Parametreyi kontrol edip isteği değiştirin.
+ChatGPT plan use is unavailable for this account or workspace.	Bu hesap veya çalışma alanı için ChatGPT planı kullanımı mevcut değil.
+A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	ChatGPT planı veya uygulama kullanım sınırına ulaşıldı. Yeniden denemeden önce haftalık kullanımı inceleyin.
+ChatGPT usage is temporarily unavailable. Keep your sign-in and try again later.	ChatGPT kullanımı geçici olarak sağlanamıyor. Oturumunuzu koruyun ve daha sonra yeniden deneyin.
+This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Bu ChatGPT hesabı zaten kayıtlıydı. Bir dahaki sefere yeniden eklemek yerine listeden seçin.

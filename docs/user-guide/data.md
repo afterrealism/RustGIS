@@ -489,6 +489,7 @@ RustGIS saves pieces of a project as files you can share and reuse:
 | Map package / mobile map package | `.rgismpk` | Publish › Package › Map or Mobile Map | Data › Import |
 | Results package (geoprocessing history and outputs) | `.rgisgpk` | Publish › Package › Results | any zip tool |
 | Task (guided command steps) | `.rgistask` | Data › Task, Publish › Save As › Task Item | Data › Task › Import Task |
+| Bookmarks (as longitude, latitude and scale) | `.rgisbookmarks` | Home › Bookmarks › Export Bookmarks | Home › Bookmarks › Import Bookmarks |
 | Layout | `.rgislayout` | Publish › Save Layout File | Data › New Publish › Import Layout |
 
 Packages are zip files. A mobile map package keeps only the visible layers and simplifies their

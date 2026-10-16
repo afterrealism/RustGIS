@@ -105,6 +105,7 @@ AI provider	Nhà cung cấp AI
 Alignment	Căn chỉnh
 All	Tất cả
 All categories	Tất cả danh mục
+All classes	Tất cả các lớp
 All files	Tất cả tệp
 All Selected	Tất cả được chọn
 All steps done.	Đã hoàn tất mọi bước.
@@ -413,8 +414,10 @@ Data Design	Thiết kế dữ liệu
 Data Engineering	Kỹ thuật dữ liệu
 Data Interop	Tương tác dữ liệu
 Data Management	Quản lý dữ liệu
+Data Sources	Nguồn dữ liệu
 Data Stores	Kho dữ liệu
 Data type	Kiểu dữ liệu
+Data\nSources	Nguồn\ndữ liệu
 Data…	Dữ liệu…
 Day and night shading for a time.	Đổ bóng ngày và đêm theo thời điểm.
 Decline	Từ chối
@@ -503,6 +506,9 @@ Drawing	Vẽ
 Drawing Effects	Hiệu ứng vẽ
 Drawing Mode	Chế độ vẽ
 Drawing Order	Thứ tự vẽ
+Duplicate	Nhân bản
+Duplicate Layout	Nhân bản bố cục
+Duplicate Map	Nhân bản bản đồ
 Dusk	Hoàng hôn
 Dynamic\nText	Văn bản\nđộng
 Dynamic Picture	Ảnh động
@@ -745,6 +751,7 @@ Hide	Ẩn
 Hide features far from the view's centre.	Ẩn các đối tượng ở xa tâm khung nhìn.
 Hide labels when the viewer is closer than this.	Ẩn nhãn khi người xem ở gần hơn giá trị này.
 Hide labels when the viewer is farther than this.	Ẩn nhãn khi người xem ở xa hơn giá trị này.
+Hide other values	Ẩn các giá trị khác
 Hide walls facing away from you.	Ẩn các bức tường quay lưng về phía bạn.
 High values of the first raster and low values of the second score best.	Giá trị cao của raster thứ nhất và giá trị thấp của raster thứ hai có điểm tốt nhất.
 Histogram Equalize	Cân bằng histogram
@@ -1083,6 +1090,7 @@ not needed	không cần
 Not saved yet	Chưa lưu
 Notebook	Sổ tay
 Notebook Pane	Ngăn sổ tay
+Nothing named {name} to rename	Không có mục nào tên {name} để đổi tên
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	Chưa chia sẻ gì. Xuất bản › Chia sẻ thành tạo bản đồ web, lớp, kiểu, cảnh và nhiều hơn nữa.
 Now	Bây giờ
 Nulls	Giá trị rỗng
@@ -1890,3 +1898,41 @@ Stop MCP relay	Dừng chuyển tiếp MCP
 MCP relay is already listening on 127.0.0.1:{port}; stop it first to use port {asked}	Chuyển tiếp MCP đang nghe tại 127.0.0.1:{port}; hãy dừng trước để dùng cổng {asked}
 Opening {url}…	Đang mở {url}…
 {url}: downloaded after another project was opened, so it wasn't opened	{url}: đã tải xuống sau khi một dự án khác được mở, nên không được mở
+ChatGPT (sign in)	ChatGPT (đăng nhập)
+Account	Tài khoản
+Waiting for the browser…	Đang chờ trình duyệt…
+signed in	đã đăng nhập
+Sign out	Đăng xuất
+Signing in with ChatGPT works in the desktop app.	Đăng nhập bằng ChatGPT hoạt động trong ứng dụng máy tính.
+The sign-in is kept in the app's settings folder, for your user account only, and never in a project file.	Thông tin đăng nhập được lưu trong thư mục cài đặt của ứng dụng, chỉ cho tài khoản người dùng của bạn, và không bao giờ trong tệp dự án.
+Sign in with your ChatGPT account.	Hãy đăng nhập bằng tài khoản ChatGPT của bạn.
+A ChatGPT sign-in can only be used with the OpenAI API.	Đăng nhập ChatGPT chỉ có thể dùng với API của OpenAI.
+Continue with ChatGPT	Tiếp tục với ChatGPT
+Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	Các yêu cầu đủ điều kiện trong RustGIS dùng gói ChatGPT của bạn. Bạn có thể quản lý mức sử dụng trong cài đặt ChatGPT.
+Got it	Đã hiểu
+Manage usage	Quản lý mức sử dụng
+Requests go to the OpenAI API and use your ChatGPT plan.	Các yêu cầu được gửi tới API của OpenAI và dùng gói ChatGPT của bạn.
+Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Đã đăng xuất trên máy tính này, nhưng OpenAI chưa xác nhận. Bạn có thể ngắt kết nối RustGIS trong cài đặt ChatGPT.
+Using ChatGPT plan	Đang dùng gói ChatGPT
+You're using your ChatGPT plan	Bạn đang dùng gói ChatGPT của mình
+Use another account	Dùng tài khoản khác
+Weekly usage	Mức sử dụng hằng tuần
+Open browser again	Mở lại trình duyệt
+Copy sign-in link	Sao chép liên kết đăng nhập
+Sign in to choose a model.	Đăng nhập để chọn mô hình.
+Choose an account	Chọn tài khoản
+Diagnostics	Chẩn đoán
+No models are available for this account.	Không có mô hình nào cho tài khoản này.
+The reply stopped before completion; no actions were run.	Phản hồi dừng trước khi hoàn tất; không có thao tác nào được thực hiện.
+The sign-in expired or was revoked. Sign in again.	Phiên đăng nhập đã hết hạn hoặc bị thu hồi. Hãy đăng nhập lại.
+The saved sign-in changed. Select your account again.	Thông tin đăng nhập đã lưu đã thay đổi. Hãy chọn lại tài khoản.
+Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	Hãy cho phép dùng gói ChatGPT khi đăng nhập. Nếu không gian làm việc của bạn không cho phép, hãy hỏi quản trị viên hoặc chọn nhà cung cấp dùng khóa API.
+Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Đã hết thời gian đăng nhập. Hãy bắt đầu lại và cho phép trình duyệt truy cập địa chỉ loopback của máy tính này.
+Sign-in cancelled.	Đã hủy đăng nhập.
+ChatGPT sign-in failed. Check the connection and local settings, then try again.	Đăng nhập ChatGPT thất bại. Kiểm tra kết nối và cài đặt cục bộ rồi thử lại.
+Check the integration's client, permissions, workspace policy and route configuration.	Kiểm tra ứng dụng khách, quyền, chính sách không gian làm việc và cấu hình định tuyến của tích hợp.
+This request uses an unsupported capability. Check the parameter and change the request.	Yêu cầu này dùng tính năng không được hỗ trợ. Kiểm tra tham số và sửa yêu cầu.
+ChatGPT plan use is unavailable for this account or workspace.	Không thể sử dụng gói ChatGPT cho tài khoản hoặc không gian làm việc này.
+A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	Đã đạt giới hạn sử dụng của gói ChatGPT hoặc ứng dụng. Xem mức sử dụng hằng tuần trước khi thử lại.
+ChatGPT usage is temporarily unavailable. Keep your sign-in and try again later.	Tạm thời không thể sử dụng ChatGPT. Giữ phiên đăng nhập và thử lại sau.
+This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Tài khoản ChatGPT này đã được lưu. Lần sau, hãy chọn nó trong danh sách thay vì thêm lại.

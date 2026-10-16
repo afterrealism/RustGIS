@@ -35,7 +35,7 @@ pub enum Entry {
         error: bool,
     },
     /// A problem talking to the model.
-    Error(String),
+    Error(crate::Error),
     /// A note from the app (a stop, a declined call).
     Note(String),
 }
@@ -141,7 +141,7 @@ impl Agent {
 
     fn send(&mut self) -> Step {
         if let Some(why) = self.config.missing() {
-            self.transcript.push(Entry::Error(why.to_string()));
+            self.transcript.push(Entry::Error(why.into()));
             self.state = State::Idle;
             return Step::Done;
         }
@@ -151,10 +151,15 @@ impl Agent {
 
     /// The response to the last [`Step::Send`] of generation `generation`.
     pub fn receive(&mut self, generation: u64, resp: Result<HttpResponse, String>, s: &mut Session) -> Step {
+        self.receive_result(generation, resp.map_err(crate::Error::from), s)
+    }
+
+    /// Receives a response with structured authentication diagnostics.
+    pub fn receive_result(&mut self, generation: u64, resp: Result<HttpResponse, crate::Error>, s: &mut Session) -> Step {
         self.guard(|a| a.receive_unguarded(generation, resp, s))
     }
 
-    fn receive_unguarded(&mut self, generation: u64, resp: Result<HttpResponse, String>, s: &mut Session) -> Step {
+    fn receive_unguarded(&mut self, generation: u64, resp: Result<HttpResponse, crate::Error>, s: &mut Session) -> Step {
         if generation != self.generation || !self.waiting() {
             return Step::Done;
         }
@@ -174,6 +179,9 @@ impl Agent {
         } else if reply.text.trim().is_empty() && reply.calls.is_empty() {
             // Small local models sometimes think and then say nothing.
             self.transcript.push(Entry::Note("The model sent an empty reply; ask again, or try another model.".into()));
+        }
+        if let Some(error) = reply.failure {
+            self.transcript.push(Entry::Error(error));
         }
         let calls = reply.calls.clone();
         self.turns.push(Turn::Assistant { text: reply.text, calls: reply.calls, native: Some((self.config.api(), reply.native)) });

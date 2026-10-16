@@ -8,7 +8,7 @@ use rustgis_map::Rgba;
 use rustgis_map::layout::{ElementKind, FrameShape, Grid, Layout, MIN_ELEMENT_MM, MapSeries, PAGES, fit_scale};
 use serde_json::{Value, json};
 
-use super::{b, f, ps};
+use super::{b, f, numbered, ps};
 use crate::{CmdResult, CommandSpec as C, Session};
 
 /// Most compressed page data a PDF export holds (less in the browser).
@@ -49,23 +49,28 @@ pub fn commands() -> Vec<C> {
         })
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout)}"#),
         C::new("layout.rename", "Rename Layout", "Browser", |s, p| {
-            let name: String = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?.chars().take(200).collect();
+            let name = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
             let i = index(s, &by_name(p))?;
             // Unique among the other layouts, so names keep finding one layout.
-            let taken = |n: &str| s.project.layouts.iter().enumerate().any(|(j, l)| j != i && l.name.eq_ignore_ascii_case(n));
-            let mut unique: String = name;
-            let base = unique.clone();
-            let mut k = 1;
-            while taken(&unique) {
-                k += 1;
-                unique = format!("{base} {k}");
-            }
+            let unique = numbered(name, |n| s.project.layouts.iter().enumerate().any(|(j, l)| j != i && l.name.eq_ignore_ascii_case(n)));
             if let Some(l) = s.project.layouts.get_mut(i) {
                 l.name = unique.clone();
             }
             Ok(json!({"name": unique}))
         })
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName": string}"#),
+        // A copy of a layout with all its elements (#288), right after it and open. Element ids
+        // are per layout, so legends and scale bars stay on their frames, which show the same maps.
+        C::new("layout.duplicate", "Duplicate Layout", "Browser", |s, p| {
+            let i = index(s, &by_name(p))?;
+            let mut l = s.project.layouts.get(i).ok_or("open a layout first")?.clone();
+            l.name = super::copy_name(ps(p, "newName"), &l.name, |n| s.project.layouts.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
+            let name = l.name.clone();
+            s.project.layouts.insert(i + 1, l);
+            s.active_layout = Some(i + 1);
+            Ok(json!({"name": name, "layout": i + 1}))
+        })
+        .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName"?: string (default: "<layout> copy")}"#),
         C::new("layout.page", "Page Size", "Publish › Page Setup", page).params(
             r#"{"layout"?, "page"?: page id, "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm}"#,
         ),
@@ -73,10 +78,10 @@ pub fn commands() -> Vec<C> {
             r#"{"layout"?, "shape"?: "rectangle"|"circle"|"ellipse"|"polygon"|"lasso", "points"?: [[u, v], …] (polygon/lasso, 0..1 across the frame), "map"?: name, "x"?, "y"?, "w"?, "h"?: mm}"#,
         ),
         C::new("layout.addElement", "Add Element", "Publish › Map Surrounds", add_element).params(
-            r##"{"layout"?, "kind": "northArrow"|"scaleBar"|"legend"|"text"|"dynamicText"|"picture"|"table"|"chart"|"rectangle"|"extentIndicator"|"grid", "frame"?: element id (default: the first map frame), "of"?: frame id (extentIndicator), "text"?, "size"?, "color"?: "#RRGGBB"|"#RRGGBBAA", "bold"?: bool (text), "title"?: legend title (default "Legend"), "fill"?: "#RRGGBBAA" (rectangle), "width"?: outline width (rectangle), "image"?: base64, "path"?: picture file, "layer"?, "field"?, "label"?, "rows"?, "step"?: degrees, "labels"?: bool, "off"?: bool (grid), "x"?, "y"?, "w"?, "h"?: mm}"##,
+            r##"{"layout"?, "kind": "northArrow"|"scaleBar"|"legend"|"text"|"dynamicText"|"picture"|"table"|"chart"|"rectangle"|"extentIndicator"|"grid", "frame"?: element id (default: the first map frame), "of"?: frame id (extentIndicator), "text"?, "size"?, "color"?: "#RRGGBB"|"#RRGGBBAA", "bold"?: bool (text), "title"?: legend title (default "Legend"), "allClasses"?: bool (legend: every class, not only those the frame draws), "hideOther"?: bool (legend: leave out <all other values>), "fill"?: "#RRGGBBAA" (rectangle), "width"?: outline width (rectangle), "image"?: base64, "path"?: picture file, "layer"?, "field"?, "label"?, "rows"?, "step"?: degrees, "labels"?: bool, "off"?: bool (grid), "x"?, "y"?, "w"?, "h"?: mm}"##,
         ),
         C::new("layout.update", "Element Properties", "Publish › Element", update).params(
-            r##"{"layout"?, "element": id, "x"?, "y"?, "w"?, "h"?: mm, "name"?, "visible"?, "text"?, "size"?, "color"?, "bold"?, "title"?, "map"?, "scale"?, "center"?: [lon, lat], "layer"?, "field"?, "rows"?}"##,
+            r##"{"layout"?, "element": id, "x"?, "y"?, "w"?, "h"?: mm, "name"?, "visible"?, "text"?, "size"?, "color"?, "bold"?, "title"?, "allClasses"?: bool (legend), "hideOther"?: bool (legend), "map"?, "scale"?, "center"?: [lon, lat], "layer"?, "field"?, "rows"?}"##,
         ),
         C::new("layout.removeElement", "Delete Element", "Publish › Element", |s, p| {
             let id = element_id(p)?;
@@ -131,11 +136,16 @@ pub fn commands() -> Vec<C> {
 /// The layout named or numbered by `layout`, else the active one, else the only one.
 fn index(s: &Session, p: &Value) -> Result<usize, String> {
     let ls = &s.project.layouts;
-    if let Some(n) = ps(p, "layout") {
-        return ls.iter().position(|l| l.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no layout '{n}'"));
-    }
-    if let Some(i) = p.get("layout").and_then(Value::as_u64) {
-        return usize::try_from(i).ok().filter(|i| *i < ls.len()).ok_or_else(|| format!("no layout {i}"));
+    // A `layout` that is neither a name nor an index is an error, never the open layout.
+    match p.get("layout") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(n)) => {
+            return ls.iter().position(|l| l.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no layout '{n}'"));
+        }
+        Some(_) => {
+            let i = super::uint(p, "layout").ok_or("layout must be a layout's name or index")?;
+            return usize::try_from(i).ok().filter(|i| *i < ls.len()).ok_or_else(|| format!("no layout {i}"));
+        }
     }
     s.active_layout
         .filter(|i| *i < ls.len())
@@ -161,15 +171,9 @@ fn element_id(p: &Value) -> Result<u32, String> {
 }
 
 fn unique_name(s: &Session, base: &str) -> String {
-    let base: String = base.trim().chars().take(200).collect();
-    let base = if base.is_empty() { "Layout".to_string() } else { base };
-    let mut name = base.clone();
-    let mut i = 1;
-    while s.project.layouts.iter().any(|l| l.name.eq_ignore_ascii_case(&name)) {
-        i += 1;
-        name = format!("{base} {i}");
-    }
-    name
+    let base = base.trim();
+    let base = if base.is_empty() { "Layout" } else { base };
+    numbered(base, |n| s.project.layouts.iter().any(|l| l.name.eq_ignore_ascii_case(n)))
 }
 
 /// (width, height) in mm from page/orientation/width/height parameters.
@@ -234,7 +238,11 @@ pub(crate) fn new_layout(s: &mut Session, p: &Value) -> CmdResult {
                 (m, m, w - 2.0 * m, 14.0),
                 ElementKind::Text { text: map.clone(), size: 22.0, color: Rgba::rgb(0x1F, 0x29, 0x37), bold: true },
             );
-            l.add("Legend", (side, m + 16.0, sw, fh * 0.6), ElementKind::Legend { frame, title: "Legend".into() });
+            l.add(
+                "Legend",
+                (side, m + 16.0, sw, fh * 0.6),
+                ElementKind::Legend { frame, title: "Legend".into(), all_classes: false, hide_other: false },
+            );
             l.add("North Arrow", (side + sw / 2.0 - 8.0, m + 16.0 + fh * 0.62, 16.0, 24.0), ElementKind::NorthArrow { frame });
             l.add("Scale Bar", (side, m + 16.0 + fh * 0.62 + 28.0, sw, 12.0), ElementKind::ScaleBar { frame });
             l.add(
@@ -362,7 +370,9 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
         "legend" => {
             let frame = frame_of(l, p)?;
             let title = ps(p, "title").unwrap_or("Legend").chars().take(200).collect();
-            ("Legend", place(p, l, (pw - 70.0, 45.0, 60.0, 80.0))?, ElementKind::Legend { frame, title })
+            let all_classes = b(p, "allClasses").unwrap_or(false);
+            let hide_other = b(p, "hideOther").unwrap_or(false);
+            ("Legend", place(p, l, (pw - 70.0, 45.0, 60.0, 80.0))?, ElementKind::Legend { frame, title, all_classes, hide_other })
         }
         "text" | "dynamicText" => {
             let default = if kind == "text" { "Text" } else { "{map} · {scale} · {date}" };
@@ -552,9 +562,15 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
                 *bold = v;
             }
         }
-        ElementKind::Legend { title, .. } => {
+        ElementKind::Legend { title, all_classes, hide_other, .. } => {
             if let Some(t) = ps(p, "title") {
                 *title = t.chars().take(200).collect();
+            }
+            if let Some(v) = b(p, "allClasses") {
+                *all_classes = v;
+            }
+            if let Some(v) = b(p, "hideOther") {
+                *hide_other = v;
             }
         }
         ElementKind::MapFrame { map, center, scale, .. } => {

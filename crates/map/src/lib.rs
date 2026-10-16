@@ -391,6 +391,22 @@ impl Layer {
         rows
     }
 
+    /// The legend rows for what this layer draws at a scale denominator (#207): the classes of the
+    /// features its definition query and display filters keep. `None` when it draws nothing there
+    /// (out of its scale range, or no feature kept, as in an empty layer), so a legend can leave it out.
+    pub fn shown_legend(&self, scale: f64) -> Option<Vec<symbology::LegendEntry>> {
+        if !self.in_scale_range(scale) {
+            return None;
+        }
+        // Nothing to filter: every feature is drawn, and no row list needs building.
+        let query = self.definition_query.as_deref().is_some_and(|q| !q.trim().is_empty());
+        if !query && self.display_filters.is_empty() {
+            return (!self.dataset.features.is_empty()).then(|| self.renderer.legend_for(&self.dataset, &[]));
+        }
+        let rows = self.drawn_rows(scale);
+        rows.contains(&true).then(|| self.renderer.legend_for(&self.dataset, &rows))
+    }
+
     /// Rows passing the definition query (all rows when none or invalid).
     pub fn visible_rows(&self) -> Vec<bool> {
         let n = self.dataset.features.len();
@@ -980,5 +996,42 @@ mod tests {
         m.layers[0].definition_query = Some("n = 2".into());
         assert_eq!(m.shown_extent(), Extent::new(10.0, 10.0, 10.0, 10.0));
         assert_eq!(m.full_extent(), Extent::new(0.0, 0.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn the_shown_legend_is_what_the_layer_draws() {
+        let mut m = Map::new("Map");
+        m.add_dataset(points());
+        let l = &mut m.layers[0];
+        // Classes for n = 1, 2 and 9: 9 is no feature's value.
+        let s = |c| Symbol::default_for(GeometryType::Point, c);
+        l.renderer = Renderer::Unique {
+            field: "n".into(),
+            classes: vec![("1".into(), s(0)), ("2".into(), s(1)), ("9".into(), s(2))],
+            other: s(3),
+            ramp: Ramp::Ember,
+        };
+        let labels = |l: &Layer, scale| l.shown_legend(scale).map(|v| v.into_iter().map(|e| e.label).collect::<Vec<_>>());
+        assert_eq!(labels(l, 1e6), Some(vec!["1".to_string(), "2".to_string()]), "no 9, no <all other values>");
+        // The definition query and display filters narrow it.
+        l.definition_query = Some("n = 2".into());
+        assert_eq!(labels(l, 1e6), Some(vec!["2".to_string()]));
+        l.definition_query = None;
+        l.display_filters = vec![effects::DisplayFilter { name: "f".into(), min_scale: None, max_scale: None, where_: "n = 1".into() }];
+        assert_eq!(labels(l, 1e6), Some(vec!["1".to_string()]));
+        // Nothing drawn: no legend at all.
+        l.display_filters.clear();
+        l.definition_query = Some("n = 3".into());
+        assert_eq!(labels(l, 1e6), None);
+        l.definition_query = None;
+        l.min_scale = Some(1e5);
+        assert_eq!(labels(l, 1e6), None, "out of its scale range");
+        assert!(labels(l, 5e4).is_some());
+        // The full legend is still there for "all classes".
+        assert_eq!(l.renderer.legend().len(), 4);
+        // An empty layer, with no query or filter to evaluate, draws nothing either.
+        l.min_scale = None;
+        l.dataset.features.clear();
+        assert_eq!(labels(l, 1e6), None);
     }
 }

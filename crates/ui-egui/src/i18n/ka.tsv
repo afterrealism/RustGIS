@@ -105,6 +105,7 @@ AI provider	AI პროვაიდერი
 Alignment	განლაგება
 All	ყველა
 All categories	ყველა კატეგორია
+All classes	ყველა კლასი
 All files	ყველა ფაილი
 All Selected	ყველა მონიშნული
 All steps done.	ყველა საფეხური შესრულდა.
@@ -413,8 +414,10 @@ Data Design	მონაცემთა დიზაინი
 Data Engineering	მონაცემთა ინჟინერია
 Data Interop	მონაცემთა ურთიერთთავსებადობა
 Data Management	მონაცემთა მართვა
+Data Sources	მონაცემთა წყაროები
 Data Stores	მონაცემთა საცავები
 Data type	მონაცემთა ტიპი
+Data\nSources	მონაცემთა\nწყაროები
 Data…	მონაცემები…
 Day and night shading for a time.	დღისა და ღამის დაჩრდილვა მოცემული დროისთვის.
 Decline	უარყოფა
@@ -503,6 +506,9 @@ Drawing	ხატვა
 Drawing Effects	ხატვის ეფექტები
 Drawing Mode	ხატვის რეჟიმი
 Drawing Order	ხატვის რიგითობა
+Duplicate	დუბლირება
+Duplicate Layout	განლაგების დუბლირება
+Duplicate Map	რუკის დუბლირება
 Dusk	ბინდი
 Dynamic\nText	დინამიკური\nტექსტი
 Dynamic Picture	დინამიკური სურათი
@@ -745,6 +751,7 @@ Hide	დამალვა
 Hide features far from the view's centre.	ხედის ცენტრიდან შორს მდებარე ობიექტების დამალვა.
 Hide labels when the viewer is closer than this.	წარწერების დამალვა, როცა მაყურებელი ამაზე ახლოსაა.
 Hide labels when the viewer is farther than this.	წარწერების დამალვა, როცა მაყურებელი ამაზე შორსაა.
+Hide other values	სხვა მნიშვნელობების დამალვა
 Hide walls facing away from you.	თქვენგან გამოსულ მიმართულებით მდებარე კედლების დამალვა.
 High values of the first raster and low values of the second score best.	პირველი რასტრის მაღალი და მეორეს დაბალი მნიშვნელობები ყველაზე მაღალ ქულას იღებს.
 Histogram Equalize	ჰისტოგრამის გათანაბრება
@@ -1083,6 +1090,7 @@ not needed	საჭირო არ არის
 Not saved yet	ჯერ არ არის შენახული
 Notebook	რვეული
 Notebook Pane	რვეულის პანელი
+Nothing named {name} to rename	გადასარქმევად {name} სახელით არაფერია
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	გაზიარებული ჯერ არაფერია. გამოქვეყნება › გაზიარება როგორც ქმნის ვებ რუკებს, ფენებს, სტილებს, სცენებს და სხვას.
 Now	ახლა
 Nulls	Null-ები
@@ -1890,3 +1898,41 @@ Stop MCP relay	MCP რელეს გაჩერება
 MCP relay is already listening on 127.0.0.1:{port}; stop it first to use port {asked}	MCP რელე უკვე უსმენს 127.0.0.1:{port}-ს; ჯერ გააჩერეთ, რომ გამოიყენოთ პორტი {asked}
 Opening {url}…	{url} იხსნება…
 {url}: downloaded after another project was opened, so it wasn't opened	{url}: ჩამოიტვირთა სხვა პროექტის გახსნის შემდეგ, ამიტომ არ გაიხსნა
+ChatGPT (sign in)	ChatGPT (შესვლა)
+Account	ანგარიში
+Waiting for the browser…	ბრაუზერის მოლოდინი…
+signed in	შესულია
+Sign out	გასვლა
+Signing in with ChatGPT works in the desktop app.	ChatGPT-ით შესვლა მუშაობს სამუშაო მაგიდის აპში.
+The sign-in is kept in the app's settings folder, for your user account only, and never in a project file.	შესვლის მონაცემები ინახება აპის პარამეტრების საქაღალდეში, მხოლოდ თქვენი მომხმარებლის ანგარიშისთვის, და არასოდეს პროექტის ფაილში.
+Sign in with your ChatGPT account.	შედით თქვენი ChatGPT ანგარიშით.
+A ChatGPT sign-in can only be used with the OpenAI API.	ChatGPT-ით შესვლის გამოყენება მხოლოდ OpenAI API-სთან შეიძლება.
+Continue with ChatGPT	გაგრძელება ChatGPT-ით
+Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	RustGIS-ის შესაბამისი მოთხოვნები თქვენს ChatGPT გეგმას იყენებს. გამოყენების მართვა ChatGPT-ის პარამეტრებშია შესაძლებელი.
+Got it	გასაგებია
+Manage usage	გამოყენების მართვა
+Requests go to the OpenAI API and use your ChatGPT plan.	მოთხოვნები OpenAI API-ს მიეწოდება და თქვენს ChatGPT გეგმას იყენებს.
+Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	ამ კომპიუტერზე გამოსვლა შესრულდა, მაგრამ OpenAI-მ ეს არ დაადასტურა. RustGIS-ის გათიშვა ChatGPT-ის პარამეტრებში შეგიძლიათ.
+Using ChatGPT plan	გამოიყენება ChatGPT გეგმა
+You're using your ChatGPT plan	თქვენ იყენებთ თქვენს ChatGPT გეგმას
+Use another account	სხვა ანგარიშის გამოყენება
+Weekly usage	კვირის გამოყენება
+Open browser again	ბრაუზერის ხელახლა გახსნა
+Copy sign-in link	შესვლის ბმულის კოპირება
+Sign in to choose a model.	მოდელის ასარჩევად შედით ანგარიშში.
+Choose an account	ანგარიშის არჩევა
+Diagnostics	დიაგნოსტიკა
+No models are available for this account.	ამ ანგარიშისთვის მოდელები ხელმისაწვდომი არ არის.
+The reply stopped before completion; no actions were run.	პასუხი დასრულებამდე შეწყდა; მოქმედებები არ შესრულებულა.
+The sign-in expired or was revoked. Sign in again.	შესვლის ვადა ამოიწურა ან წვდომა გაუქმდა. ხელახლა შედით.
+The saved sign-in changed. Select your account again.	შენახული შესვლა შეიცვალა. ხელახლა აირჩიეთ თქვენი ანგარიში.
+Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	შესვლისას დაუშვით ChatGPT გეგმის გამოყენება. თუ თქვენი სამუშაო სივრცე ამას არ უშვებს, მიმართეთ მის ადმინისტრატორს ან აირჩიეთ API გასაღებიანი პროვაიდერი.
+Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	შესვლის ლოდინის დრო ამოიწურა. დაიწყეთ თავიდან და მიეცით ბრაუზერს ამ კომპიუტერის უკუკავშირის მისამართზე წვდომა.
+Sign-in cancelled.	შესვლა გაუქმდა.
+ChatGPT sign-in failed. Check the connection and local settings, then try again.	ChatGPT-ში შესვლა ვერ მოხერხდა. შეამოწმეთ კავშირი და ადგილობრივი პარამეტრები, შემდეგ სცადეთ ხელახლა.
+Check the integration's client, permissions, workspace policy and route configuration.	შეამოწმეთ ინტეგრაციის კლიენტი, ნებართვები, სამუშაო სივრცის პოლიტიკა და მარშრუტების კონფიგურაცია.
+This request uses an unsupported capability. Check the parameter and change the request.	ეს მოთხოვნა მხარდაუჭერელ შესაძლებლობას იყენებს. შეამოწმეთ პარამეტრი და შეცვალეთ მოთხოვნა.
+ChatGPT plan use is unavailable for this account or workspace.	ამ ანგარიშისთვის ან სამუშაო სივრცისთვის ChatGPT-ის გეგმის გამოყენება მიუწვდომელია.
+A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	მიღწეულია ChatGPT-ის გეგმის ან აპის გამოყენების ლიმიტი. ხელახლა ცდამდე გადახედეთ კვირის გამოყენებას.
+ChatGPT usage is temporarily unavailable. Keep your sign-in and try again later.	ChatGPT-ის გამოყენება დროებით მიუწვდომელია. შეინარჩუნეთ შესვლა და მოგვიანებით სცადეთ.
+This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	ეს ChatGPT ანგარიში უკვე შენახულია. შემდეგ ჯერზე ხელახლა დამატების ნაცვლად აირჩიეთ სიიდან.

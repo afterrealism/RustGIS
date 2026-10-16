@@ -803,6 +803,7 @@ pub const ITEMS: &[(&str, &str, &str)] = &[
     ("mobilePackage", "rgismpk", "RustGIS mobile map package"),
     ("gpPackage", "rgisgpk", "RustGIS results package"),
     ("task", "rgistask", "RustGIS task"),
+    ("bookmarks", "rgisbookmarks", "RustGIS bookmarks"),
     ("obj", "obj", "Wavefront OBJ"),
     ("report", "rgisreport", "RustGIS report"),
     ("reportTemplate", "rgisrpttemplate", "RustGIS report template"),
@@ -861,6 +862,7 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
             (s.map().name.clone(), package_map(s, kind == "mobilePackage", tol)?)
         }
         "gpPackage" => ("results".to_string(), package_gp(s)?),
+        "bookmarks" => (format!("{} bookmarks", s.map().name), super::navigate::bookmarks_file(s.map())?),
         "task" => {
             let t = task_ref(s, p)?;
             (t.name.clone(), to_json(t)?)
@@ -907,7 +909,7 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
 }
 
 /// Writes an item to `path`.
-fn save_item(s: &mut Session, kind: &str, p: &Value) -> CmdResult {
+pub(crate) fn save_item(s: &mut Session, kind: &str, p: &Value) -> CmdResult {
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     let (_, bytes) = item_bytes(s, kind, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;

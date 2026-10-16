@@ -105,6 +105,7 @@ AI provider	Penyedia AI
 Alignment	Perataan
 All	Semua
 All categories	Semua kategori
+All classes	Semua kelas
 All files	Semua berkas
 All Selected	Semua Terpilih
 All steps done.	Semua langkah selesai.
@@ -413,8 +414,10 @@ Data Design	Desain Data
 Data Engineering	Rekayasa Data
 Data Interop	Interoperabilitas Data
 Data Management	Manajemen Data
+Data Sources	Sumber Data
 Data Stores	Penyimpanan Data
 Data type	Tipe data
+Data\nSources	Sumber\nData
 Data…	Data…
 Day and night shading for a time.	Bayangan siang dan malam untuk suatu waktu.
 Decline	Tolak
@@ -503,6 +506,9 @@ Drawing	Penggambaran
 Drawing Effects	Efek Penggambaran
 Drawing Mode	Mode Penggambaran
 Drawing Order	Urutan Gambar
+Duplicate	Duplikat
+Duplicate Layout	Duplikat Tata Letak
+Duplicate Map	Duplikat Peta
 Dusk	Senja
 Dynamic\nText	Teks\nDinamis
 Dynamic Picture	Gambar Dinamis
@@ -745,6 +751,7 @@ Hide	Sembunyikan
 Hide features far from the view's centre.	Sembunyikan fitur yang jauh dari pusat tampilan.
 Hide labels when the viewer is closer than this.	Sembunyikan label saat penampil lebih dekat dari nilai ini.
 Hide labels when the viewer is farther than this.	Sembunyikan label saat penampil lebih jauh dari nilai ini.
+Hide other values	Sembunyikan nilai lain
 Hide walls facing away from you.	Sembunyikan dinding yang membelakangi Anda.
 High values of the first raster and low values of the second score best.	Nilai tinggi raster pertama dan nilai rendah raster kedua mendapat skor terbaik.
 Histogram Equalize	Ekualisasi Histogram
@@ -1083,6 +1090,7 @@ not needed	tidak diperlukan
 Not saved yet	Belum disimpan
 Notebook	Notebook
 Notebook Pane	Panel Notebook
+Nothing named {name} to rename	Tidak ada yang bernama {name} untuk diganti namanya
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	Belum ada yang dibagikan. Publikasi › Bagikan Sebagai membuat peta web, layer, gaya, scene, dan lainnya.
 Now	Sekarang
 Nulls	Null
@@ -1890,3 +1898,41 @@ Stop MCP relay	Hentikan Relay MCP
 MCP relay is already listening on 127.0.0.1:{port}; stop it first to use port {asked}	Relay MCP sudah mendengarkan di 127.0.0.1:{port}; hentikan dulu untuk memakai port {asked}
 Opening {url}…	Membuka {url}…
 {url}: downloaded after another project was opened, so it wasn't opened	{url}: diunduh setelah proyek lain dibuka, jadi tidak dibuka
+ChatGPT (sign in)	ChatGPT (masuk)
+Account	Akun
+Waiting for the browser…	Menunggu peramban…
+signed in	sudah masuk
+Sign out	Keluar
+Signing in with ChatGPT works in the desktop app.	Masuk dengan ChatGPT berfungsi di aplikasi desktop.
+The sign-in is kept in the app's settings folder, for your user account only, and never in a project file.	Info masuk disimpan di folder pengaturan aplikasi, hanya untuk akun pengguna Anda, dan tidak pernah di berkas proyek.
+Sign in with your ChatGPT account.	Masuk dengan akun ChatGPT Anda.
+A ChatGPT sign-in can only be used with the OpenAI API.	Masuk dengan ChatGPT hanya dapat digunakan dengan API OpenAI.
+Continue with ChatGPT	Lanjutkan dengan ChatGPT
+Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	Permintaan yang memenuhi syarat di RustGIS menggunakan paket ChatGPT Anda. Anda dapat mengelola penggunaan di pengaturan ChatGPT.
+Got it	Mengerti
+Manage usage	Kelola penggunaan
+Requests go to the OpenAI API and use your ChatGPT plan.	Permintaan dikirim ke API OpenAI dan menggunakan paket ChatGPT Anda.
+Signed out on this computer, but OpenAI didn't confirm it. You can disconnect RustGIS in ChatGPT's settings.	Keluar di komputer ini, tetapi OpenAI tidak mengonfirmasinya. Anda dapat memutus RustGIS di pengaturan ChatGPT.
+Using ChatGPT plan	Menggunakan paket ChatGPT
+You're using your ChatGPT plan	Anda menggunakan paket ChatGPT Anda
+Use another account	Gunakan akun lain
+Weekly usage	Penggunaan mingguan
+Open browser again	Buka browser lagi
+Copy sign-in link	Salin tautan masuk
+Sign in to choose a model.	Masuk untuk memilih model.
+Choose an account	Pilih akun
+Diagnostics	Diagnostik
+No models are available for this account.	Tidak ada model yang tersedia untuk akun ini.
+The reply stopped before completion; no actions were run.	Respons berhenti sebelum selesai; tidak ada tindakan yang dijalankan.
+The sign-in expired or was revoked. Sign in again.	Sesi masuk kedaluwarsa atau dicabut. Masuk lagi.
+The saved sign-in changed. Select your account again.	Sesi masuk yang disimpan berubah. Pilih akun Anda lagi.
+Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	Izinkan penggunaan paket ChatGPT saat masuk. Jika workspace Anda tidak mengizinkannya, tanyakan kepada admin-nya atau pilih penyedia dengan kunci API.
+Sign-in timed out. Start again and allow the browser to reach this computer's loopback address.	Waktu masuk habis. Mulai lagi dan izinkan browser mengakses alamat loopback komputer ini.
+Sign-in cancelled.	Proses masuk dibatalkan.
+ChatGPT sign-in failed. Check the connection and local settings, then try again.	Gagal masuk ke ChatGPT. Periksa koneksi dan pengaturan lokal, lalu coba lagi.
+Check the integration's client, permissions, workspace policy and route configuration.	Periksa klien, izin, kebijakan ruang kerja, dan konfigurasi rute integrasi.
+This request uses an unsupported capability. Check the parameter and change the request.	Permintaan ini menggunakan kemampuan yang tidak didukung. Periksa parameter dan ubah permintaan.
+ChatGPT plan use is unavailable for this account or workspace.	Penggunaan paket ChatGPT tidak tersedia untuk akun atau ruang kerja ini.
+A ChatGPT plan or app usage limit was reached. Review Weekly usage before trying again.	Batas penggunaan paket ChatGPT atau aplikasi telah tercapai. Tinjau penggunaan mingguan sebelum mencoba lagi.
+ChatGPT usage is temporarily unavailable. Keep your sign-in and try again later.	Penggunaan ChatGPT untuk sementara tidak tersedia. Pertahankan sesi masuk Anda dan coba lagi nanti.
+This ChatGPT account was already saved. Next time, choose it in the list instead of adding it again.	Akun ChatGPT ini sudah tersimpan. Lain kali, pilih dari daftar alih-alih menambahkannya lagi.

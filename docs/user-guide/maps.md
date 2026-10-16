@@ -8,7 +8,10 @@ projection, bookmarks and view settings. Maps open as tabs above the map view.
 Drag to pan and scroll to zoom; ++home++ (or **Full Extent**) shows all the data. **Map ›
 Navigate** has fixed zoom steps, **Previous** and **Next** extents, **Bookmarks** (the World Atlas
 has World, Europe, Africa, Americas and East Asia) and **Go To XY**, which pans to a longitude and
-latitude. Type a scale in the status bar to jump to it. More navigation tools are under [View
+latitude. The Bookmarks menu removes a bookmark with the button beside it, and exports or imports
+them as a `.rgisbookmarks` file. Imported bookmarks show the same place on a map in another
+projection; places that projection can't show are skipped. Type a scale in the status bar to jump
+to it. More navigation tools are under [View
 effects](#view-effects) below.
 
 **Find Place** (`map.findPlace`) looks up a place or an address by name with OpenStreetMap's

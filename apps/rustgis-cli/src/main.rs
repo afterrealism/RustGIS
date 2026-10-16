@@ -9,8 +9,11 @@
 //!     --cmd 'gp.run={"tool":"buffer","params":{"input":"Cities","distance":100}}' \
 //!     --cmd 'share.exportMap={"path":"out.png"}' [--save out.rgis]
 //! rustgis-cli ask [--sample | --project p.rgis | --data f.geojson …] "Which cities have over 10 million people?" \
-//!     [--provider anthropic|openai|gemini|openrouter|ollama|custom] [--model M] [--base-url URL] [--yes] [--save out.rgis] [--trace log.txt]
+//!     [--provider anthropic|openai|chatgpt|gemini|openrouter|ollama|custom] [--model M] [--base-url URL] [--yes] [--save out.rgis] [--trace log.txt]
 //! rustgis-cli ask --models [--provider P]                # list the provider's models
+//! rustgis-cli ask --accounts | --account CLIENT_ID       # list or select a saved registration
+//! rustgis-cli ask --login [--another-account]            # sign in with ChatGPT to use your ChatGPT plan
+//! rustgis-cli ask --logout
 //! rustgis-cli mcp [--sample | --project p.rgis | --data f.geojson …] [--yes]   # an MCP server on stdio
 //! rustgis-cli mcp --attach [PORT] [--yes]   # the same, on the desktop app already open (its MCP Relay)
 //! rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id>
@@ -37,7 +40,7 @@ use serde_json::{Value, json};
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rustgis-cli commands | tools\n  rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id> | browse | get <id> | prepare <id>] [--registry URL]\n  rustgis-cli info <data>\n  rustgis-cli logo <out.png|out.ico|out.bmp> [--size N] [--canvas WxH --at X,Y (.bmp only)]\n  rustgis-cli render <data|project> <out.png> [--basemap NAME] [--tiles URL] [--width N] [--height N] [--dpi N] [--worldview auto|default|china]\n  rustgis-cli run [--sample] [--project P] [--data F]… --cmd 'id={{json}}'… [--save P] [--worldview auto|default|china]\n  rustgis-cli ask [--sample] [--project P] [--data F]… \"request\" [--provider P] [--model M] [--base-url URL] [--yes] [--save P]\n  rustgis-cli ask --models [--provider P]\n  rustgis-cli mcp [--sample] [--project P] [--data F]… [--yes] [--attach [PORT]]"
+        "usage:\n  rustgis-cli commands | tools\n  rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id> | browse | get <id> | prepare <id>] [--registry URL]\n  rustgis-cli info <data>\n  rustgis-cli logo <out.png|out.ico|out.bmp> [--size N] [--canvas WxH --at X,Y (.bmp only)]\n  rustgis-cli render <data|project> <out.png> [--basemap NAME] [--tiles URL] [--width N] [--height N] [--dpi N] [--worldview auto|default|china]\n  rustgis-cli run [--sample] [--project P] [--data F]… --cmd 'id={{json}}'… [--save P] [--worldview auto|default|china]\n  rustgis-cli ask [--sample] [--project P] [--data F]… \"request\" [--provider P] [--model M] [--base-url URL] [--yes] [--save P]\n  rustgis-cli ask --models [--provider P]\n  rustgis-cli ask --login [--another-account] [--account CLIENT_ID] | --logout\n  rustgis-cli ask --accounts | --account CLIENT_ID\n  rustgis-cli mcp [--sample] [--project P] [--data F]… [--yes] [--attach [PORT]]"
     );
     ExitCode::from(2)
 }
@@ -107,8 +110,19 @@ fn open_inputs(s: &mut Session, args: &[String]) -> Result<(), String> {
 fn ask(s: &mut Session, args: &[String]) -> Result<(), String> {
     use rustgis_assistant::{Agent, Config, Entry, agent, http, provider};
     // The first value that isn't an option's.
-    let takes_value =
-        ["--provider", "--model", "--base-url", "--project", "--data", "--save", "--trace", "--plugin", "--registry", "--worldview"];
+    let takes_value = [
+        "--provider",
+        "--model",
+        "--base-url",
+        "--project",
+        "--data",
+        "--save",
+        "--trace",
+        "--plugin",
+        "--registry",
+        "--worldview",
+        "--account",
+    ];
     let prompt = args
         .iter()
         .enumerate()
@@ -119,13 +133,32 @@ fn ask(s: &mut Session, args: &[String]) -> Result<(), String> {
         .map(str::to_string)
         .or_else(|| std::env::var("RUSTGIS_ASSISTANT_PROVIDER").ok())
         .or_else(|| {
-            // The first provider with a key in the environment.
-            provider::PRESETS.iter().find(|p| !Config::from_env(p.id).key.is_empty()).map(|p| p.id.to_string())
+            // The first provider with a key in the environment (a ChatGPT sign-in is chosen, not assumed).
+            provider::PRESETS.iter().find(|p| !p.login && !Config::from_env(p.id).key.is_empty()).map(|p| p.id.to_string())
         })
         .unwrap_or_else(|| "ollama".into());
     if provider::preset(&provider).is_none() {
         let ids: Vec<&str> = provider::PRESETS.iter().map(|p| p.id).collect();
         return Err(format!("unknown provider '{provider}' (one of {})", ids.join(", ")));
+    }
+    if args.iter().any(|a| a == "--accounts") {
+        for c in rustgis_assistant::chatgpt::accounts()? {
+            out!("{}\t{}", c.client_id, c.label());
+        }
+        return Ok(());
+    }
+    if let Some(id) = opt(args, "--account") {
+        let accounts = rustgis_assistant::chatgpt::accounts()?;
+        let matches: Vec<_> = accounts.iter().filter(|c| c.client_id == id).collect();
+        if matches.len() != 1 {
+            return Err("--account needs an unambiguous client id from --accounts".into());
+        }
+        if let Some(c) = matches.first() {
+            rustgis_assistant::chatgpt::select(&c.client_id, &c.subject)?;
+        }
+        if prompt.is_none() && !args.iter().any(|a| a == "--login" || a == "--models") {
+            return Ok(());
+        }
     }
     let mut cfg = Config::from_env(&provider);
     if let Some(m) = opt(args, "--model").map(str::to_string).or_else(|| std::env::var("RUSTGIS_ASSISTANT_MODEL").ok()) {
@@ -134,17 +167,84 @@ fn ask(s: &mut Session, args: &[String]) -> Result<(), String> {
     if let Some(u) = opt(args, "--base-url") {
         cfg.base_url = u.to_string();
     }
+    if args.iter().any(|a| a == "--logout") {
+        use rustgis_assistant::chatgpt;
+        if let Some(r) = chatgpt::sign_out()?
+            && let Err(e) = chatgpt::revoke(&r)
+        {
+            eprintln!(
+                "signed out on this computer, but OpenAI didn't confirm it ({e}); disconnect RustGIS in ChatGPT's settings if needed"
+            );
+            return Ok(());
+        }
+        eprintln!("signed out of ChatGPT");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--login") {
+        use rustgis_assistant::chatgpt;
+        let login = chatgpt::login(args.iter().any(|a| a == "--another-account"))?;
+        eprintln!("Open this page in your browser to continue with ChatGPT:\n{}", login.url);
+        let c = loop {
+            if let Some(r) = login.poll() {
+                break r?;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        };
+        if !c.plan_allowed() {
+            return Err(rustgis_assistant::Error::new(rustgis_assistant::Recovery::Consent, "").to_string());
+        }
+        let who = if c.email.is_empty() { "your ChatGPT account" } else { c.email.as_str() };
+        eprintln!("signed in as {who}; RustGIS now uses your ChatGPT plan (manage usage at {})", chatgpt::USAGE_URL);
+        return Ok(());
+    }
+    // A signed-in account's requests renew its tokens as needed.
+    // Without a usable sign-in, say how to sign in before asking for anything.
+    if cfg.login()
+        && cfg.key.is_empty()
+        && (prompt.is_some() || args.iter().any(|a| a == "--models"))
+        && let Some(why) = cfg.missing()
+    {
+        return Err(format!("{provider}: {why} (run rustgis-cli ask --login)"));
+    }
+    let login = cfg.login().then(|| cfg.binding());
+    let signed_in = login.is_some();
+    let transport = move |req: &rustgis_assistant::HttpRequest| match &login {
+        Some(account) => rustgis_assistant::chatgpt::send(req, account).map_err(String::from),
+        None => http::send(req),
+    };
+    if signed_in && !args.iter().any(|a| a == "--models") && prompt.is_some() {
+        let r = transport(&provider::models_request(&cfg))?;
+        let models = provider::parse_catalog(&r)?;
+        if models.is_empty() {
+            return Err("no models are available for this account".into());
+        }
+        let explicit = opt(args, "--model").is_some() || std::env::var("RUSTGIS_ASSISTANT_MODEL").is_ok();
+        if !explicit {
+            cfg.model.clear();
+        }
+        provider::use_catalog(&mut cfg, &models, explicit);
+    }
     if args.iter().any(|a| a == "--models") {
-        let r = http::send(&provider::models_request(&cfg))?;
-        for m in provider::parse_models(cfg.api(), &r)? {
-            out!("{m}");
+        let r = transport(&provider::models_request(&cfg))?;
+        if signed_in {
+            for m in provider::parse_catalog(&r)? {
+                out!("{}\t{}", m.id, m.name);
+            }
+        } else {
+            for m in provider::parse_models(cfg.api(), &r)? {
+                out!("{m}");
+            }
         }
         return Ok(());
     }
     let prompt = prompt.ok_or("ask needs a request, e.g. rustgis-cli ask --sample \"Which countries have the largest GDP?\"")?;
     if let Some(why) = cfg.missing() {
-        let env = provider::preset(&provider).map(|p| p.key_env.join(" or ")).unwrap_or_default();
-        return Err(format!("{provider}: {why} (set {env})"));
+        let hint = match provider::preset(&provider) {
+            Some(p) if p.login => "run rustgis-cli ask --login".to_string(),
+            Some(p) => format!("set {}", p.key_env.join(" or ")),
+            None => String::new(),
+        };
+        return Err(format!("{provider}: {why} ({hint})"));
     }
     eprintln!("[{} · {}]", cfg.provider, cfg.model);
     let yes = args.iter().any(|a| a == "--yes");
@@ -168,7 +268,7 @@ fn ask(s: &mut Session, args: &[String]) -> Result<(), String> {
     // `--trace FILE`: each request and response body (never the headers, which carry the key).
     let trace = opt(args, "--trace").map(std::path::PathBuf::from);
     let send = |req: &rustgis_assistant::HttpRequest| {
-        let r = http::send(req);
+        let r = transport(req);
         if let Some(path) = &trace {
             let resp = match &r {
                 Ok(r) => format!("HTTP {}\n{}", r.status, String::from_utf8_lossy(&r.body)),

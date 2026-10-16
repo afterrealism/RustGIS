@@ -54,3 +54,42 @@ fn plugin_strings_use_the_plugins_translations() {
     assert_eq!(tr(de, "Open"), de.0.catalog().get("Open").copied().unwrap_or("Open"));
     plugins::unload("i18n-fallback");
 }
+
+#[test]
+fn chatgpt_recovery_and_controls_have_real_translations() {
+    use rustgis_assistant::{Error, Recovery};
+    let mut keys = vec![
+        "Weekly usage",
+        "Open browser again",
+        "Copy sign-in link",
+        "Sign in to choose a model.",
+        "Choose an account",
+        "Diagnostics",
+        "No models are available for this account.",
+        "The reply stopped before completion; no actions were run.",
+    ];
+    let errors: Vec<_> = [
+        Recovery::SignIn,
+        Recovery::AccountChanged,
+        Recovery::Consent,
+        Recovery::Timeout,
+        Recovery::Cancelled,
+        Recovery::Auth,
+        Recovery::Configuration,
+        Recovery::Unsupported,
+        Recovery::Ineligible,
+        Recovery::Usage,
+        Recovery::Later,
+    ]
+    .into_iter()
+    .map(|r| Error::new(r, ""))
+    .collect();
+    keys.extend(errors.iter().map(Error::message));
+    for l in &LANGUAGES[1..] {
+        let (catalog, _) = parse(l.source);
+        for key in &keys {
+            let translated = catalog.get(*key).unwrap_or_else(|| panic!("{}: missing {key}", l.code));
+            assert_ne!(translated, key, "{}: untranslated {key}", l.code);
+        }
+    }
+}
