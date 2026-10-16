@@ -123,6 +123,8 @@ pub struct MapView {
     pub(crate) render_state: Option<egui_wgpu::RenderState>,
     /// The GPU map backend, for now gated on the RUSTGIS_GPU environment variable.
     pub gpu_enabled: bool,
+    /// Rolling map-frame timestamps (for the status-bar FPS readout).
+    frame_times: std::collections::VecDeque<f64>,
 }
 
 impl Default for MapView {
@@ -163,6 +165,7 @@ impl Default for MapView {
             gpu_target_split: std::sync::Arc::new(std::sync::Mutex::new(None)),
             render_state: None,
             gpu_enabled: std::env::var_os("RUSTGIS_GPU").is_some(),
+            frame_times: std::collections::VecDeque::new(),
         }
     }
 }
@@ -172,6 +175,24 @@ impl MapView {
     /// backend. Cheap to call every frame: the state is Arc-backed and pipelines build lazily.
     pub fn set_render_state(&mut self, rs: Option<egui_wgpu::RenderState>) {
         self.render_state = rs;
+    }
+
+    /// Records one drawn map frame (the status bar's FPS readout reads the rolling window).
+    fn record_frame(&mut self, now: f64) {
+        self.frame_times.push_back(now);
+        while self.frame_times.len() > 240 {
+            self.frame_times.pop_front();
+        }
+        while self.frame_times.front().is_some_and(|t| *t < now - 2.0) {
+            self.frame_times.pop_front();
+        }
+    }
+
+    /// Frames drawn in the last second; `None` when the map is idle (egui repaints on demand,
+    /// so no frames means nothing is moving — distinct from "0 fps" when moving).
+    pub(crate) fn fps(&self, now: f64) -> Option<usize> {
+        let live = self.frame_times.back().is_some_and(|t| *t > now - 0.5);
+        live.then(|| self.frame_times.iter().filter(|t| **t > now - 1.0).count())
     }
     /// Forces a re-render on the next frame; also drops the GPU frame (the backend toggle
     /// relies on it).
@@ -345,6 +366,7 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     }
     let ppp = ui.ctx().pixels_per_point();
     let time = now(ui);
+    app.map.record_frame(time);
 
     interact(app, ui, &resp, rect);
 
@@ -1800,5 +1822,26 @@ mod picture_tests {
         assert!(bomb.len() < 4 << 20, "{}", bomb.len());
         assert!(super::decode_picture(&bomb).is_err());
         assert!(super::decode_picture(b"not a picture").is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fps_counts_the_last_second_and_idle_is_none() {
+        let mut mv = MapView::default();
+        assert_eq!(mv.fps(0.0), None, "no frames yet");
+        for i in 0..10 {
+            mv.record_frame(i as f64 * 0.05);
+        }
+        assert_eq!(mv.fps(0.46), Some(10), "all ten frames inside the window");
+        // A second burst later: the first burst has aged out of the 1 s window.
+        for i in 0..10 {
+            mv.record_frame(1.2 + i as f64 * 0.05);
+        }
+        assert_eq!(mv.fps(1.7), Some(10), "only the new burst counts");
+        assert_eq!(mv.fps(2.3), None, "idle (no frame in 500 ms)");
     }
 }

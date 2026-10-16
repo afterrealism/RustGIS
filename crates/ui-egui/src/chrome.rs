@@ -292,6 +292,25 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // The CPU/GPU backend toggle, then the frame rate (live while the map moves,
+                    // "— fps" when idle), then the last render's cost.
+                    let gpu = app.map.gpu_enabled;
+                    let resp = ui.add(
+                        egui::Label::new(egui::RichText::new(if gpu { "GPU" } else { "CPU" }).size(11.0).monospace().color(if gpu {
+                            t.accent_text
+                        } else {
+                            t.text_dim
+                        }))
+                        .sense(Sense::click()),
+                    );
+                    if resp.on_hover_text(tl!("Switch between GPU and CPU map rendering")).clicked() {
+                        let _ = app.run("ui.map.gpu", Value::Null);
+                    }
+                    sep(ui, &t);
+                    let fps = app.map.fps(ui.input(|i| i.time)).map(|n| format!("{n} fps")).unwrap_or_else(|| "— fps".into());
+                    ui.label(egui::RichText::new(fps).size(11.0).monospace().color(t.text_disabled))
+                        .on_hover_text(tl!("Map frames per second (live while the map moves)"));
+                    sep(ui, &t);
                     ui.label(egui::RichText::new(format!("{} ms", app.map.render_ms)).size(11.0).color(t.text_disabled))
                         .on_hover_text(tl!("Last map render time"));
                     sep(ui, &t);
