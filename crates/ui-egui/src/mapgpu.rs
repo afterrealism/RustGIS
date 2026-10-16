@@ -859,6 +859,29 @@ mod tests {
     }
 
     #[test]
+    fn parity_polar_projection() {
+        // A bounded-area projection maps the far hemisphere to non-finite coordinates; both
+        // backends break the affected rings there rather than bridging them (ring_path vs
+        // decimate_runs). Regression: this failed with 1206 structural outliers when the GPU
+        // bridged the gaps.
+        assert_parity(
+            "polar projection",
+            || {
+                let mut m = world_map();
+                m.projection = rustgis_engine::map::Projection::Custom("northPolar".into());
+                m
+            },
+            &View {
+                width: 640.0,
+                height: 400.0,
+                pixels_per_point: 1.0,
+                camera: Camera { center: Coord::new(0.0, 0.0), res: 15_000.0 },
+                dark: false,
+            },
+        );
+    }
+
+    #[test]
     fn parity_world_sample_gl() {
         // The web build forces wgpu's GL backend (WebGL2): same scene, GL adapter.
         assert_parity_on("world sample (GL)", world_map, &world_view(), wgpu::Backends::GL);

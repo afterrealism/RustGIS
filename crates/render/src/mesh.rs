@@ -26,19 +26,24 @@ fn rel(c: Coord, origin: [f64; 2]) -> [f32; 2] {
 }
 
 /// Drops consecutive points closer than 0.35 physical px, keeping the first and always the
-/// last — the exact rule of `Ctx::ring_path` (the dropped point doesn't become the anchor).
+/// last — the exact rule of `Ctx::ring_path` (the dropped point doesn't become the anchor) —
+/// and yields one run per maximal finite segment: a point the projection can't show breaks
+/// the ring there rather than being bridged (also `ring_path`; lyon's path builder panics on
+/// NaN, so non-finite coordinates never reach it).
 /// `map_per_px` is map units per physical pixel (`camera.res / pixels_per_point` on the flat
 /// map, where `to_screen` is affine).
-///
-/// Non-finite points (hostile files) are dropped first: lyon's path builder *panics* on NaN,
-/// and the CPU path breaks the ring there anyway, so the GPU breaks it the same place.
-fn decimate(ring: &[Coord], map_per_px: f64) -> Vec<Coord> {
+fn decimate_runs(ring: &[Coord], map_per_px: f64) -> Vec<Vec<Coord>> {
     let threshold = 0.35 * map_per_px;
     let n = ring.len();
-    let mut out = Vec::with_capacity(n.min(1024));
+    let mut runs = Vec::new();
+    let mut out: Vec<Coord> = Vec::new();
     let mut last: Option<Coord> = None;
     for (i, c) in ring.iter().enumerate() {
         if !c.is_finite() {
+            if !out.is_empty() {
+                runs.push(std::mem::take(&mut out));
+            }
+            last = None;
             continue;
         }
         let keep = !matches!(last, Some(l) if (c.x - l.x).abs() + (c.y - l.y).abs() < threshold && i + 1 != n);
@@ -47,25 +52,29 @@ fn decimate(ring: &[Coord], map_per_px: f64) -> Vec<Coord> {
             last = Some(*c);
         }
     }
-    out
+    if !out.is_empty() {
+        runs.push(out);
+    }
+    runs
 }
 
 fn path_of(rings: &[Vec<Coord>], origin: [f64; 2], map_per_px: f64, min_points: usize) -> Option<Path> {
     let mut b = Path::builder();
     let mut any = false;
     for ring in rings {
-        let pts = decimate(ring, map_per_px);
-        if pts.len() < min_points {
-            continue;
+        for pts in decimate_runs(ring, map_per_px) {
+            if pts.len() < min_points {
+                continue;
+            }
+            any = true;
+            let p0 = rel(pts[0], origin);
+            b.begin(lyon::math::point(p0[0], p0[1]));
+            for c in &pts[1..] {
+                let p = rel(*c, origin);
+                b.line_to(lyon::math::point(p[0], p[1]));
+            }
+            b.close();
         }
-        any = true;
-        let p0 = rel(pts[0], origin);
-        b.begin(lyon::math::point(p0[0], p0[1]));
-        for c in &pts[1..] {
-            let p = rel(*c, origin);
-            b.line_to(lyon::math::point(p[0], p[1]));
-        }
-        b.close();
     }
     any.then(|| b.build())
 }
@@ -113,28 +122,29 @@ fn stroke(
     let mut tess = StrokeTessellator::new();
     let options = StrokeOptions::default().with_line_width(1.0).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
     for ring in rings {
-        let pts = decimate(ring, map_per_px);
-        if pts.len() < min_points {
-            continue;
+        for pts in decimate_runs(ring, map_per_px) {
+            if pts.len() < min_points {
+                continue;
+            }
+            let mut b = Path::builder();
+            let p0 = rel(pts[0], origin);
+            b.begin(lyon::math::point(p0[0], p0[1]));
+            for c in &pts[1..] {
+                let p = rel(*c, origin);
+                b.line_to(lyon::math::point(p[0], p[1]));
+            }
+            b.end(closed);
+            // position_on_path = position - normal * half_width, half_width = 0.5 at width 1.0.
+            tess.tessellate_path(
+                &b.build(),
+                &options,
+                &mut BuffersBuilder::new(&mut out, |v: lyon::tessellation::StrokeVertex| {
+                    let (p, n) = (v.position(), v.normal());
+                    MeshVertex { position: [p.x - n.x * 0.5, p.y - n.y * 0.5], normal: [n.x, n.y], color, stroke_px: width_px, _pad: 0.0 }
+                }),
+            )
+            .map_err(|_| ())?;
         }
-        let mut b = Path::builder();
-        let p0 = rel(pts[0], origin);
-        b.begin(lyon::math::point(p0[0], p0[1]));
-        for c in &pts[1..] {
-            let p = rel(*c, origin);
-            b.line_to(lyon::math::point(p[0], p[1]));
-        }
-        b.end(closed);
-        // position_on_path = position - normal * half_width, half_width = 0.5 at width 1.0.
-        tess.tessellate_path(
-            &b.build(),
-            &options,
-            &mut BuffersBuilder::new(&mut out, |v: lyon::tessellation::StrokeVertex| {
-                let (p, n) = (v.position(), v.normal());
-                MeshVertex { position: [p.x - n.x * 0.5, p.y - n.y * 0.5], normal: [n.x, n.y], color, stroke_px: width_px, _pad: 0.0 }
-            }),
-        )
-        .map_err(|_| ())?;
     }
     Ok((!out.indices.is_empty()).then_some((out.vertices, out.indices)))
 }
@@ -384,8 +394,28 @@ mod tests {
             Coord::new(1.7, 0.0),  // 0.7: not < 0.7, keep
             Coord::new(1.71, 0.0), // last point: always kept
         ];
-        let out = decimate(&ring, 2.0);
-        assert_eq!(out, vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(1.7, 0.0), Coord::new(1.71, 0.0)]);
+        let runs = decimate_runs(&ring, 2.0);
+        assert_eq!(
+            runs,
+            vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(1.7, 0.0), Coord::new(1.71, 0.0)]],
+            "no NaN: one run, the old rule"
+        );
+    }
+
+    #[test]
+    fn decimate_breaks_at_non_finite_points_like_ring_path() {
+        let ring = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(10.0, 0.0),
+            Coord::new(f64::NAN, 0.0), // the break
+            Coord::new(20.0, 0.0),
+            Coord::new(20.5, 0.0), // 0.5 < 0.7 from the run's fresh anchor: dropped
+            Coord::new(30.0, 0.0),
+        ];
+        let runs = decimate_runs(&ring, 2.0);
+        assert_eq!(runs.len(), 2, "two finite runs, no bridging edge");
+        assert_eq!(runs[0], vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0)]);
+        assert_eq!(runs[1], vec![Coord::new(20.0, 0.0), Coord::new(30.0, 0.0)], "decimation resets across the break");
     }
 
     #[test]
