@@ -374,6 +374,27 @@ pub(crate) struct SceneBuffers {
     pub has_images: bool,
 }
 
+/// Whether one draw command fits the device: each of its buffers within `max_buffer_size`,
+/// its index/instance count within u32 (they become draw counts), and images non-empty,
+/// within `max_texture_dimension_2d`, with exactly `w*h*4` pixels — anything else would only
+/// raise wgpu validation errors (fatal under eframe), so the caller renders the frame with
+/// the CPU backend instead.
+fn cmd_fits(limits: &wgpu::Limits, cmd: &DrawCmd) -> bool {
+    let fits = |bytes: usize| u64::try_from(bytes).is_ok_and(|b| b <= limits.max_buffer_size);
+    let max_dim = limits.max_texture_dimension_2d;
+    match cmd {
+        DrawCmd::Mesh { vertices, indices, .. } => {
+            fits(std::mem::size_of_val(vertices.as_slice()))
+                && fits(std::mem::size_of_val(indices.as_slice()))
+                && u32::try_from(indices.len()).is_ok()
+        }
+        DrawCmd::Points { instances, .. } => fits(std::mem::size_of_val(instances.as_slice())) && u32::try_from(instances.len()).is_ok(),
+        DrawCmd::Image { rgba, size: [w, h] } => {
+            (1..=max_dim).contains(w) && (1..=max_dim).contains(h) && rgba.len() as u64 == *w as u64 * *h as u64 * 4
+        }
+    }
+}
+
 impl SceneBuffers {
     pub(crate) fn from_scene(
         device: &wgpu::Device,
@@ -383,7 +404,11 @@ impl SceneBuffers {
         camera: Camera,
         size: [f64; 2],
         ppp: f32,
-    ) -> SceneBuffers {
+    ) -> Option<SceneBuffers> {
+        let limits = device.limits();
+        if !scene.cmds.iter().all(|c| cmd_fits(&limits, c)) {
+            return None;
+        }
         let mut draws = Vec::with_capacity(scene.cmds.len());
         let mut has_images = false;
         for cmd in &scene.cmds {
@@ -490,7 +515,7 @@ impl SceneBuffers {
                 }
             }
         }
-        SceneBuffers { draws, clear: scene.clear, size, ppp, has_images }
+        Some(SceneBuffers { draws, clear: scene.clear, size, ppp, has_images })
     }
 
     /// Rewrites every command's camera uniforms for a moved camera — pan/zoom without
@@ -578,6 +603,7 @@ impl CallbackTrait for SceneCallback {
 mod tests {
     use super::*;
     use rustgis_engine::geom::Coord;
+    use rustgis_engine::render::gpu_scene::{MeshVertex, PointInstance};
 
     fn assert_matches_to_screen(cam: Camera, w: f64, h: f64, p: Coord, origin: [f64; 2]) {
         let m = view_proj(&cam, w, h, origin);
@@ -656,11 +682,30 @@ mod tests {
     }
 
     #[test]
+    fn commands_over_device_limits_are_declined() {
+        let limits = wgpu::Limits { max_buffer_size: 1024, max_texture_dimension_2d: 2048, ..Default::default() };
+        let mesh = |nv: usize, ni: usize| DrawCmd::Mesh {
+            origin: [0.0, 0.0],
+            vertices: vec![MeshVertex { position: [0.0, 0.0], normal: [0.0, 0.0], color: [0.0; 4], stroke_px: 0.0, _pad: 0.0 }; nv],
+            indices: vec![0u32; ni],
+        };
+        assert!(cmd_fits(&limits, &mesh(4, 6)), "small mesh fits");
+        assert!(!cmd_fits(&limits, &mesh(100, 6)), "a vertex buffer over max_buffer_size declines");
+        assert!(!cmd_fits(&limits, &mesh(4, 300)), "an index buffer over max_buffer_size declines");
+        assert!(
+            !cmd_fits(&limits, &DrawCmd::Image { rgba: vec![0; 16], size: [2049, 2] }),
+            "an image over max_texture_dimension_2d declines"
+        );
+        assert!(!cmd_fits(&limits, &DrawCmd::Image { rgba: vec![], size: [0, 0] }), "a 0x0 image declines");
+        assert!(!cmd_fits(&limits, &DrawCmd::Image { rgba: vec![0; 8], size: [2, 2] }), "pixels that don't match the size decline");
+        assert!(cmd_fits(&limits, &DrawCmd::Image { rgba: vec![0; 16], size: [2, 2] }), "a valid 2x2 image fits");
+    }
+
+    #[test]
     fn gpu_renderer_constructs_and_uploads_headless() {
         let Some(rs) = headless_render_state() else { return };
         let r = GpuMapRenderer::new(&rs);
         // A tiny scene uploads: one triangle, one marker instance, one CPU image.
-        use rustgis_engine::render::gpu_scene::{MeshVertex, PointInstance};
         let v =
             |x: f32, y: f32| MeshVertex { position: [x, y], normal: [0.0, 0.0], color: [1.0, 0.0, 0.0, 1.0], stroke_px: 0.0, _pad: 0.0 };
         let scene = GpuScene {
@@ -680,7 +725,8 @@ mod tests {
             data_pending: false,
             tile_errors: vec![],
         };
-        let sb = SceneBuffers::from_scene(&rs.device, &rs.queue, &r, &scene, Camera::world(), [400.0, 300.0], 1.0);
+        let sb =
+            SceneBuffers::from_scene(&rs.device, &rs.queue, &r, &scene, Camera::world(), [400.0, 300.0], 1.0).expect("fits the device");
         assert_eq!(sb.draws.len(), 3);
     }
 
@@ -708,7 +754,7 @@ mod tests {
             view.camera,
             [view.width, view.height],
             view.pixels_per_point as f32,
-        );
+        )?;
         let (w, h) = view.pixel_size();
         if w == 0 || h == 0 {
             return None;

@@ -301,9 +301,11 @@ fn split_view(app: &mut RustGisApp, ui: &mut Ui, other: usize, rect: Rect, t: &T
             && let Some(rustgis_engine::render::RenderOutput::Gpu(scene)) =
                 rustgis_engine::render::render_backend(m, &view, rustgis_engine::render::Backend::Gpu)
         {
-            let bufs = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, m.camera, [w, h], ppp);
-            app.map.split_gpu = Some((key, std::sync::Arc::new(bufs), scene.labels));
-            rendered_gpu = true;
+            // None = the scene exceeds the device's limits: the CPU path below renders it.
+            if let Some(bufs) = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, m.camera, [w, h], ppp) {
+                app.map.split_gpu = Some((key, std::sync::Arc::new(bufs), scene.labels));
+                rendered_gpu = true;
+            }
         }
     }
         }
@@ -475,24 +477,28 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 && let Some(rustgis_engine::render::RenderOutput::Gpu(scene)) =
                     rustgis_engine::render::render_backend(app.session.map_mut(), &view, rustgis_engine::render::Backend::Gpu)
             {
-                let bufs = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, cam, [w, h], render_ppp);
-                app.map.gpu_frame = Some(std::sync::Arc::new(bufs));
-                app.map.labels = scene.labels;
-                app.map.labels.splice(0..0, scene.unplaced);
-                app.map.attribution = scene.attribution;
-                app.map.last_render = time;
-                for e in scene.tile_errors {
-                    if app.map.tile_errors.insert(e.clone()) {
-                        app.session.notify(e, true);
+                if let Some(bufs) = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, cam, [w, h], render_ppp) {
+                    app.map.gpu_frame = Some(std::sync::Arc::new(bufs));
+                    app.map.labels = scene.labels;
+                    app.map.labels.splice(0..0, scene.unplaced);
+                    app.map.attribution = scene.attribution;
+                    app.map.last_render = time;
+                    for e in scene.tile_errors {
+                        if app.map.tile_errors.insert(e.clone()) {
+                            app.session.notify(e, true);
+                        }
                     }
+                    app.map.tex_camera = cam;
+                    app.map.key = Some(key);
+                    rendered_gpu = true;
                 }
-                app.map.tex_camera = cam;
-                app.map.key = Some(key);
-                rendered_gpu = true;
+                // The scene exceeds the device's limits (huge buffers, oversized images): the
+                // CPU block below renders the frame instead.
             }
         }
         // The CPU path, unchanged — also the fallback when the GPU backend declines a frame
-        // (render_backend's own compatibility guard) or no render state arrived yet.
+        // (render_backend's own compatibility guard, or a scene over the device's limits), or
+        // no render state arrived yet.
         if !rendered_gpu {
             app.map.gpu_frame = None;
             if let Some(r) = rustgis_engine::render::render(app.session.map_mut(), &view) {

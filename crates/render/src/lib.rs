@@ -1815,6 +1815,32 @@ mod tests {
     }
 
     #[test]
+    fn gpu_backend_skips_non_finite_stroke_widths() {
+        // A hostile symbol state (NaN stroke width) must not put NaN vertices on the GPU:
+        // the line's stroke is skipped, the rest of the scene is unaffected.
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("l", GeometryType::Polyline, vec![]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-50.0, 0.0), Coord::new(50.0, 0.0)]])), vec![]);
+        let id = m.add_dataset(d);
+        if let Some(l) = m.layer_mut(id) {
+            l.renderer = rustgis_map::Renderer::Single(rustgis_map::Symbol {
+                fill: rustgis_map::Rgba::rgb(0, 0, 200),
+                stroke: rustgis_map::Rgba::rgb(0, 0, 200),
+                stroke_width: f32::NAN,
+                size: 0.0,
+                marker: rustgis_map::Marker::Circle,
+            });
+        }
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        for c in &scene.cmds {
+            if let gpu_scene::DrawCmd::Mesh { vertices, .. } = c {
+                assert!(vertices.iter().all(|v| v.position[0].is_finite() && v.position[1].is_finite() && v.stroke_px.is_finite()));
+            }
+        }
+    }
+
+    #[test]
     fn gpu_backend_handles_non_finite_geometry_without_panicking() {
         // A polygon with a NaN vertex (hostile file): the GPU drops the point (lyon's path
         // builder panics on NaN — never feed it), the healthy layer still tessellates, and

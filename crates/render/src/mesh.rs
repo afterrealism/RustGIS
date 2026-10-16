@@ -184,7 +184,7 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
     if let Some(h) = halo {
         out.push(PointInstance { position: rel(c, origin), color: premul(h), radius_px: r + 1.75 * ppp, shape });
     }
-    let stroke_active = s.stroke_width > 0.0 && s.stroke.a() > 0;
+    let stroke_active = s.stroke_width > 0.0 && s.stroke.a() > 0 && (s.stroke_width * ppp).is_finite();
     if stroke_active {
         out.push(PointInstance { position: rel(c, origin), color: premul(s.stroke), radius_px: r + s.stroke_width * ppp / 2.0, shape });
     }
@@ -195,6 +195,9 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
 
 fn extend_mesh(v: &mut Vec<MeshVertex>, i: &mut Vec<u32>, part: Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()>) -> Result<(), ()> {
     if let Some((pv, pi)) = part? {
+        if v.len() + pv.len() > u32::MAX as usize {
+            return Err(()); // a mesh this big can't index itself (u32): the layer falls back to the CPU
+        }
         let base = v.len() as u32;
         v.extend(pv);
         i.extend(pi.into_iter().map(|x| x + base));
@@ -221,7 +224,8 @@ fn append_geometry(
         Geometry::Point(c) => pts.extend(marker_instances(*c, origin, s, ppp, None)),
         Geometry::MultiPoint(cs) => cs.iter().for_each(|c| pts.extend(marker_instances(*c, origin, s, ppp, None))),
         Geometry::Line(parts) => {
-            if s.stroke.a() > 0 {
+            // A non-finite width (hostile symbol state) would put NaN vertices on the GPU.
+            if s.stroke.a() > 0 && (s.stroke_width * ppp).is_finite() {
                 extend_mesh(v, i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px))?;
             }
         }
