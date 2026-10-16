@@ -986,6 +986,8 @@ pub struct GpForm {
     pub files: HashMap<&'static str, (String, Vec<u8>)>,
     /// The tool and file parameter the browser's file picker is choosing for.
     pub pending_file: Option<(&'static str, &'static str)>,
+    /// Paths being typed into a layer list, by its parameter (cleared when a tool opens).
+    pub drafts: HashMap<&'static str, String>,
     /// Uninstall was pressed once: the button now asks to confirm.
     pub confirm_uninstall: bool,
     /// Why the last uninstall failed (apart from `last`, which a tool run sets too).
@@ -1121,7 +1123,7 @@ pub struct Install {
 /// A parameter taking several layers in order (a GeoLibre tool's list of rasters, such as the
 /// bands of a composite): one row per layer, which can be moved up, down or removed, and a list
 /// adding one of the `offered` layers not yet in it. The value is the names separated by `;`.
-fn layer_list(values: &mut HashMap<&'static str, String>, ui: &mut Ui, param: &'static str, cur: &str, offered: Vec<String>) {
+fn layer_list(form: &mut GpForm, ui: &mut Ui, param: &'static str, cur: &str, offered: Vec<String>) {
     let mut names: Vec<String> = cur.split(';').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect();
     let mut changed = false;
     let mut action: Option<(usize, i8)> = None;
@@ -1177,20 +1179,17 @@ fn layer_list(values: &mut HashMap<&'static str, String>, ui: &mut Ui, param: &'
     // A file not opened as a layer, typed in (the runner reads paths on disk).
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let id = ui.id().with(("gp_list_path", param));
-        let mut path: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-        let edit =
-            ui.add(egui::TextEdit::singleline(&mut path).hint_text(tl!("Add a file path")).desired_width(ui.available_width() - 4.0));
+        let path = form.drafts.entry(param).or_default();
+        let edit = ui.add(egui::TextEdit::singleline(path).hint_text(tl!("Add a file path")).desired_width(ui.available_width() - 4.0));
         let path_name = path.trim();
         if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !path_name.is_empty() && !path_name.contains(';') {
             names.push(path_name.to_string());
             changed = true;
             path.clear();
         }
-        ui.data_mut(|d| d.insert_temp(id, path));
     }
     if changed {
-        values.insert(param, names.join(";"));
+        form.values.insert(param, names.join(";"));
     }
 }
 
@@ -1201,6 +1200,7 @@ impl GpForm {
         self.values.clear();
         self.tables.clear();
         self.files.clear();
+        self.drafts.clear();
         self.last = None;
         let Some(spec) = tool.and_then(rustgis_engine::analysis::tool) else { return };
         let active = s.active_layer.and_then(|id| s.map().layer(id));
@@ -1724,7 +1724,7 @@ fn geoprocessing(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             ParamKind::RasterLayers | ParamKind::VectorLayers => {
                 let raster = p.kind == ParamKind::RasterLayers;
                 let offered = app.session.map().layers.iter().filter(|l| l.is_raster() == raster).map(|l| l.name.clone()).collect();
-                layer_list(&mut app.gp.values, ui, p.name, &cur, offered);
+                layer_list(&mut app.gp, ui, p.name, &cur, offered);
                 ui.add_space(4.0);
                 continue;
             }
