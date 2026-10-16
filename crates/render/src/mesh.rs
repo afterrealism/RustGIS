@@ -21,6 +21,7 @@ pub(crate) fn premul(c: Rgba) -> [f32; 4] {
     [c.r() as f32 / 255.0 * a, c.g() as f32 / 255.0 * a, c.b() as f32 / 255.0 * a, a]
 }
 
+/// Origin-relative f32 position (the f64 subtraction happens here, where the precision is).
 fn rel(c: Coord, origin: [f64; 2]) -> [f32; 2] {
     [(c.x - origin[0]) as f32, (c.y - origin[1]) as f32]
 }
@@ -58,6 +59,8 @@ fn decimate_runs(ring: &[Coord], map_per_px: f64) -> Vec<Vec<Coord>> {
     runs
 }
 
+/// One closed subpath per decimated finite run of every ring. `None` when nothing survives
+/// (the caller's `?` then skips or falls the layer back).
 fn path_of(rings: &[Vec<Coord>], origin: [f64; 2], map_per_px: f64, min_points: usize) -> Option<Path> {
     let mut b = Path::builder();
     let mut any = false;
@@ -193,6 +196,8 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
     out
 }
 
+/// Appends a tessellated part with its indices rebased onto the shared vertex list. `Err` when
+/// lyon failed the part or the result would overflow the u32 index space.
 fn extend_mesh(v: &mut Vec<MeshVertex>, i: &mut Vec<u32>, part: Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()>) -> Result<(), ()> {
     if let Some((pv, pi)) = part? {
         if v.len() + pv.len() > u32::MAX as usize {

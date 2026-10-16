@@ -48,6 +48,7 @@ const SHAPES: usize = 5;
 /// tiny-skia marker shapes at `render::lib.rs` `Ctx::marker`).
 fn marker_templates() -> [[f32; 4]; TEMPLATE_VERTS * SHAPES] {
     let mut out = [[0.0; 4]; TEMPLATE_VERTS * SHAPES];
+    // Writes one shape's triangle fan (centre + consecutive outline pairs) into its slot.
     fn fan(outline: &[(f32, f32)], dst: &mut [[f32; 4]]) {
         for (i, &a) in outline.iter().enumerate() {
             let b = outline[(i + 1) % outline.len()];
@@ -396,6 +397,9 @@ fn cmd_fits(limits: &wgpu::Limits, cmd: &DrawCmd) -> bool {
 }
 
 impl SceneBuffers {
+    /// Uploads a scene's draw commands (meshes, marker instances, CPU images) and bakes the
+    /// initial per-command camera uniforms. `None` when the scene exceeds the device's limits
+    /// (`cmd_fits`) — the caller renders it with the CPU backend instead.
     pub(crate) fn from_scene(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

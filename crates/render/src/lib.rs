@@ -644,6 +644,9 @@ fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bo
     Some(())
 }
 
+/// The shared render body behind [`render`], [`render_backend`] and the export paths.
+/// `full_res_rasters` renders rasters at full resolution (exports); `backend` selects the CPU
+/// pixmap or a GPU scene (see [`Backend`]).
 fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<RenderOutput> {
     let (w, h) = view.pixel_size();
     let mut pm = Pixmap::new(w, h)?;
