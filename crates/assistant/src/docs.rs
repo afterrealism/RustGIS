@@ -48,8 +48,8 @@ pub const PAGES: &[Page] = pages![
     "privacy.md",
 ];
 
-/// The longest page or section handed back (characters).
-pub const MAX_READ: usize = 24_000;
+/// Default maximum lines per documentation read, following Pi’s read-tool convention.
+pub const MAX_READ_LINES: usize = 2000;
 
 impl Page {
     /// The page's first heading.
@@ -229,6 +229,15 @@ fn snippet(body: &str, words: &[String]) -> String {
 
 /// A page, or one section of it (by heading, any case), as Markdown.
 pub fn read(path: &str, section: Option<&str>) -> Result<Value, String> {
+    read_with_budget(path, section, 1, MAX_READ_LINES, crate::tools::MAX_RESULT)
+}
+
+/// Read complete lines within a serialized JSON byte budget. `next_offset` resumes the
+/// same page/section without losing text. Offsets are 1-based, like Pi's file-read tool.
+pub fn read_with_budget(path: &str, section: Option<&str>, offset: u64, limit: usize, max_bytes: usize) -> Result<Value, String> {
+    if offset == 0 {
+        return Err("offset must be a positive integer (1-based line)".into());
+    }
     let pg = page(path).ok_or_else(|| {
         let all: Vec<&str> = PAGES.iter().map(|p| p.path).collect();
         format!("no page '{path}' (one of {})", all.join(", "))
@@ -243,5 +252,36 @@ pub fn read(path: &str, section: Option<&str>) -> Result<Value, String> {
             (text, format!("{}#{}", pg.url(), slug(heading)))
         }
     };
-    Ok(json!({"page": pg.path, "title": pg.title(), "url": url, "markdown": crate::tools::clip(text.trim(), MAX_READ)}))
+    let lines: Vec<&str> = text.trim().split_inclusive('\n').collect();
+    let start = usize::try_from(offset.saturating_sub(1)).unwrap_or(usize::MAX).min(lines.len());
+    let available = lines.len().saturating_sub(start).min(limit.clamp(1, MAX_READ_LINES));
+    let make = |count: usize| {
+        let end = start + count;
+        let mut value = json!({"page": pg.path, "title": pg.title(), "url": url,
+            "markdown": lines.iter().skip(start).take(count).copied().collect::<String>()});
+        if end < lines.len() {
+            value["truncated"] = json!(true);
+            value["next_offset"] = json!(end + 1);
+        }
+        value
+    };
+    if make(available).to_string().len() <= max_bytes {
+        return Ok(make(available));
+    }
+    let (mut low, mut high) = (0, available);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if make(mid).to_string().len() <= max_bytes {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let value = make(low);
+    if value.to_string().len() > max_bytes || (low == 0 && available > 0) {
+        return Err(
+            "The documentation line exceeds the tool output budget; increase the context/output budget or read a narrower section.".into(),
+        );
+    }
+    Ok(value)
 }

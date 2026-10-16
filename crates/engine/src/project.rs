@@ -119,7 +119,7 @@ struct TableFile {
 impl From<TableFile> for Table {
     fn from(t: TableFile) -> Self {
         let TableFile { id, name, geometry_type, fields, features, source } = t;
-        Table { id, dataset: Dataset { name, geometry_type, fields, features, source, windowed: false } }
+        Table { id, dataset: Dataset { name, geometry_type, fields, features: features.into(), source, windowed: false } }
     }
 }
 

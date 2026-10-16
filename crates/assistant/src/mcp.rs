@@ -213,7 +213,7 @@ fn tool_list() -> Vec<Value> {
                 "run_command" => "Run a RustGIS command by id with JSON parameters (see search_commands for ids and parameters). Each run is one undo step (edit.undo undoes it). Commands that read or write files or use the network run only when the server was started with --yes.".to_string(),
                 "read_doc" => {
                     let pages: Vec<&str> = docs::PAGES.iter().map(|p| p.path).collect();
-                    format!("Read a RustGIS documentation page as Markdown, or one section of it. Pages: {}.", pages.join(", "))
+                    format!("Read a RustGIS documentation page or section as Markdown. Use next_offset to continue budgeted results. Pages: {}.", pages.join(", "))
                 }
                 _ => d.description.to_string(),
             };

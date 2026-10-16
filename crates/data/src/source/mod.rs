@@ -287,7 +287,7 @@ pub fn materialize(src: &dyn FeatureSource) -> Result<(Dataset, ReadReport)> {
     let info = src.info();
     let batch = src.read(&Request::all())?;
     let mut ds = Dataset::new(info.name.clone(), info.geometry_type, info.fields.clone());
-    ds.features = batch.features;
+    ds.features = batch.features.into();
     let mut report = ReadReport { skipped: batch.skipped, messages: info.notes.iter().map(|n| format!("{}: {n}", info.name)).collect() };
     if !batch.complete {
         report.messages.push(format!("{}: read a sample of {} of {} features", info.name, ds.features.len(), batch.matched));

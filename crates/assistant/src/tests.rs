@@ -25,6 +25,7 @@ fn cfg(provider: &str) -> Config {
         client_id: String::new(),
         session: String::new(),
         reasoning: None,
+        tool_output_token_limit: crate::tools::DEFAULT_OUTPUT_TOKENS,
     }
 }
 
@@ -306,7 +307,8 @@ fn hostile_arguments_never_panic() {
             let _ = tools::gate(&s, &c);
             let _ = tools::summary(&c);
             if let Ok(r) = tools::run(&mut s, &c) {
-                assert!(r.chars().count() <= tools::MAX_RESULT + 60);
+                assert!(r.len() <= tools::MAX_RESULT);
+                assert!(serde_json::from_str::<Value>(&r).is_ok());
             }
         }
     }
@@ -910,6 +912,7 @@ fn mcp_hostile_messages_never_panic() {
     }
 }
 
+/// Cut replies keep calls paired with not-run results across provider wire formats.
 #[test]
 fn cut_replies_never_run_their_calls() {
     // Chat Completions cut at the length limit, with a (possibly partial) call.
@@ -961,6 +964,7 @@ fn cut_replies_never_run_their_calls() {
     assert_eq!(contents.last().map(|c| c["parts"][0]["text"].clone()), Some(json!("go on")));
 }
 
+/// Documentation tools are shared, read-only, and return bounded complete JSON.
 #[test]
 fn docs_tools_are_the_assistants_too() {
     let names: Vec<&str> = tools::defs().iter().map(|d| d.name).collect();
@@ -971,12 +975,10 @@ fn docs_tools_are_the_assistants_too() {
     assert!(found.contains("basemap") || found.contains("Basemap"), "{found}");
     assert!(tools::run(&mut s, &call("read_doc", json!({"page": "cli.md"}))).unwrap().contains("rustgis-cli"));
     assert!(tools::run(&mut s, &call("read_doc", json!({"page": "nope.md"}))).is_err());
-    // Pages aren't cut again at the usual result length: every one comes back as whole JSON, as the
-    // MCP server served them.
-    let long = tools::run(&mut s, &call("read_doc", json!({"page": "user-guide/data.md"}))).unwrap();
-    assert!(long.chars().count() > tools::MAX_RESULT);
+    // Every page is complete JSON, including escaped Markdown, and fits the shared byte budget.
     for p in crate::docs::PAGES {
         let page = tools::run(&mut s, &call("read_doc", json!({"page": p.path}))).unwrap();
+        assert!(page.len() <= tools::MAX_RESULT);
         assert!(serde_json::from_str::<Value>(&page).is_ok_and(|v| v["page"] == p.path), "{}", p.path);
     }
 }
@@ -1721,4 +1723,141 @@ fn token_errors_keep_codes_and_do_not_echo_credentials() {
         assert_eq!(error.recovery, recovery);
         assert!(!format!("{error:?}").contains("synthetic-secret"));
     }
+}
+
+/// Even hostile escaped/Unicode strings and tiny budgets produce bounded, valid JSON.
+#[test]
+fn tool_output_truncation_is_valid_json() {
+    for value in [json!({"text": "漢字\n\"\\".repeat(30_000)}), json!(["x".repeat(200_000)]), json!(null)] {
+        for tokens in [1, 32, 819, 10_000, 24_000, usize::MAX] {
+            let result = tools::bounded_json(&value, tokens);
+            assert!(result.len() <= tools::output_bytes(tokens));
+            let parsed: Value = serde_json::from_str(&result).unwrap();
+            if value.to_string().len() <= tools::output_bytes(tokens) {
+                assert_eq!(parsed, value);
+            } else {
+                assert!(!parsed.is_null());
+                if parsed.is_string() {
+                    let marker = parsed.as_str().unwrap();
+                    assert!(!marker.is_empty() && "truncated".starts_with(marker));
+                } else {
+                    assert_eq!(parsed["truncated"], true);
+                }
+            }
+        }
+    }
+    let mut s = sample();
+    let search =
+        tools::run(&mut s, &ToolCall { id: "s".into(), name: "search_docs".into(), args: json!({"query": "map", "limit": 30}) }).unwrap();
+    let parsed: Value = serde_json::from_str(&search).unwrap();
+    assert_eq!(parsed["results"].as_array().unwrap().len(), 30);
+    assert!(search.len() > 8000, "exercise the former mid-JSON clipping boundary");
+    for query in ["map", "layer", "data", "the"] {
+        let result = tools::run_with_budget(
+            &mut s,
+            &ToolCall { id: "s".into(), name: "search_docs".into(), args: json!({"query": query, "limit": 30}) },
+            819,
+        )
+        .unwrap();
+        assert!(result.len() <= 819 * 4);
+        assert!(serde_json::from_str::<Value>(&result).is_ok());
+    }
+}
+
+/// A client with a small output budget can recover an entire document through complete-line continuation.
+#[test]
+fn documentation_reads_resume_without_gaps() {
+    let mut s = sample();
+    let mut offset = 1u64;
+    let mut text = String::new();
+    loop {
+        let result = tools::run_with_budget(
+            &mut s,
+            &ToolCall {
+                id: "r".into(),
+                name: "read_doc".into(),
+                args: json!({"page": "user-guide/data.md", "offset": offset, "limit": 20}),
+            },
+            819,
+        )
+        .unwrap();
+        assert!(result.len() <= 819 * 4);
+        let v: Value = serde_json::from_str(&result).unwrap();
+        text.push_str(v["markdown"].as_str().unwrap());
+        let Some(next) = v["next_offset"].as_u64() else { break };
+        assert!(next > offset);
+        offset = next;
+    }
+    assert_eq!(text, crate::docs::page("user-guide/data.md").unwrap().text.trim());
+    let end = crate::docs::read_with_budget("cli.md", None, u64::MAX, 2000, tools::MAX_RESULT).unwrap();
+    assert_eq!(end["markdown"], "");
+    assert!(end.get("next_offset").is_none());
+}
+
+/// The agent applies its configured output budget, rather than only the direct/MCP default.
+#[test]
+fn agent_tool_results_respect_configured_output_budget() {
+    let mut s = sample();
+    let mut config = cfg("openai");
+    config.tool_output_token_limit = 102;
+    let mut agent = Agent::new(config, &s);
+    assert!(matches!(agent.ask("Search docs", &s), Step::Send(_)));
+    let response = ok(call("s", "search_docs", json!({"query": "map", "limit": 30})));
+    assert!(matches!(agent.receive(agent.generation(), response, &mut s), Step::Send(_)));
+    let result = agent.transcript.iter().find_map(|e| if let Entry::Tool { result, .. } = e { Some(result) } else { None }).unwrap();
+    assert!(result.len() <= 102 * 4);
+    assert!(serde_json::from_str::<Value>(result).is_ok());
+}
+
+/// Tiny error budgets retain a diagnostic prefix instead of becoming bare null.
+#[test]
+fn tiny_tool_budgets_keep_error_diagnostics() {
+    let error = "unknown tool: ".to_string() + &"漢字\n\"\\".repeat(500);
+    for tokens in [0, 1, 2, 4, 8, 16, 32] {
+        let result = tools::bounded_json(&json!({"error": error}), tokens);
+        assert!(result.len() <= tools::output_bytes(tokens));
+        let value: Value = serde_json::from_str(&result).unwrap();
+        let diagnostic = value.as_str().unwrap();
+        assert!(!diagnostic.is_empty());
+        assert!(format!("error: {error}").starts_with(diagnostic));
+        if tokens >= 8 {
+            assert!(diagnostic.contains("unknown tool"));
+        }
+    }
+    let mut s = sample();
+    let mut config = cfg("openai");
+    config.tool_output_token_limit = 32;
+    let mut agent = Agent::new(config, &s);
+    let _ = agent.ask("run tool", &s);
+    let response = ok(call("bad", &"missing".repeat(200), json!({})));
+    let _ = agent.receive(agent.generation(), response, &mut s);
+    let result = agent
+        .transcript
+        .iter()
+        .find_map(|e| match e {
+            Entry::Tool { result, error: true, .. } => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert!(result.len() <= tools::output_bytes(32));
+    assert!(serde_json::from_str::<Value>(result).unwrap().as_str().unwrap().contains("unknown tool"));
+}
+
+/// Only an absent offset defaults to line one; present invalid values fail through tools and MCP.
+#[test]
+fn documentation_offsets_reject_invalid_values() {
+    let mut s = sample();
+    let server = crate::mcp::Server::default();
+    for offset in [json!(null), json!(0), json!(-1), json!(1.5), json!("2"), json!([]), json!({}), json!(1e20)] {
+        let args = json!({"page": "cli.md", "offset": offset});
+        let call = ToolCall { id: "r".into(), name: "read_doc".into(), args: args.clone() };
+        assert!(tools::run(&mut s, &call).unwrap_err().contains("offset must be a positive integer"));
+        let (error, text) = call_tool(&server, &mut s, "read_doc", args);
+        assert!(error && text.contains("offset must be a positive integer"));
+    }
+    assert!(crate::docs::read_with_budget("cli.md", None, 0, 2000, tools::MAX_RESULT).is_err());
+    let read = |args| ToolCall { id: "r".into(), name: "read_doc".into(), args };
+    let default = tools::run(&mut s, &read(json!({"page": "cli.md"}))).unwrap();
+    assert_eq!(default, tools::run(&mut s, &read(json!({"page": "cli.md", "offset": 1}))).unwrap());
+    assert_ne!(default, tools::run(&mut s, &read(json!({"page": "cli.md", "offset": 2}))).unwrap());
 }

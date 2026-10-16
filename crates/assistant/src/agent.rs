@@ -228,13 +228,14 @@ impl Agent {
 
     /// Runs (or declines) the first waiting call and records its result.
     fn run_front(&mut self, s: &mut Session, allow: bool) {
+        let tokens = self.config.tool_output_token_limit;
         let State::Calls(q, results) = &mut self.state else { return };
         let Some(call) = q.pop_front() else { return };
         let summary = tools::summary(&call);
         let (content, error) = if allow {
-            match tools::run(s, &call) {
+            match tools::run_with_budget(s, &call, tokens) {
                 Ok(c) => (c, false),
-                Err(e) => (tools::clip(&e, tools::MAX_RESULT), true),
+                Err(e) => (tools::bounded_json(&serde_json::json!({"error": e}), tokens), true),
             }
         } else {
             ("The user declined this action. Don't retry it; ask what they'd like instead.".to_string(), true)

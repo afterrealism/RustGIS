@@ -12,9 +12,19 @@ use serde_json::{Value, json};
 
 use crate::provider::{ToolCall, ToolDef};
 
-/// The longest tool result handed to the model (characters).
-pub const MAX_RESULT: usize = 8000;
+/// Default per-tool token estimate, matching Codex's default output budget.
+pub const DEFAULT_OUTPUT_TOKENS: usize = 10_000;
+/// Absolute per-tool ceiling, even when the context window is very large.
+pub const MAX_OUTPUT_TOKENS: usize = 24_000;
+/// Default byte budget: like Codex, estimate one token per four UTF-8 bytes.
+pub const MAX_RESULT: usize = DEFAULT_OUTPUT_TOKENS * 4;
 
+/// Convert a requested token estimate to the shared, clamped serialized byte budget.
+pub fn output_bytes(tokens: usize) -> usize {
+    tokens.clamp(1, MAX_OUTPUT_TOKENS) * 4
+}
+
+/// Shared tool definitions for the in-app assistant and MCP clients.
 pub fn defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -110,12 +120,14 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_doc",
-            description: "Read a RustGIS documentation page as Markdown, or one section of it (page paths come from search_docs). Long pages read best one section at a time.",
+            description: "Read a RustGIS documentation page as Markdown, or one section of it (page paths come from search_docs). Long pages read best one section at a time. Results are budgeted; continue at next_offset when present.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "page": {"type": "string", "description": "Page path, e.g. user-guide/cartography.md"},
-                    "section": {"type": "string", "description": "A section heading (default the whole page)"}
+                    "section": {"type": "string", "description": "A section heading (default the whole page)"},
+                    "offset": {"type": "integer", "minimum": 1, "description": "First line, 1-based (default 1; use next_offset to continue)"},
+                    "limit": {"type": "integer", "description": "Maximum lines (default 2000)"}
                 },
                 "required": ["page"]
             }),
@@ -205,6 +217,12 @@ pub fn summary(call: &ToolCall) -> String {
 
 /// Runs a call; `Err` is a result the model is told failed.
 pub fn run(s: &mut Session, call: &ToolCall) -> Result<String, String> {
+    run_with_budget(s, call, DEFAULT_OUTPUT_TOKENS)
+}
+
+/// Runs a call with a per-result token estimate, capped by the absolute ceiling.
+pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Result<String, String> {
+    let max_bytes = output_bytes(tokens);
     let a = &call.args;
     let v = match call.name.as_str() {
         "list_layers" => s.run("info.project", &Value::Null)?,
@@ -231,9 +249,18 @@ pub fn run(s: &mut Session, call: &ToolCall) -> Result<String, String> {
         }
         "read_features" => read_features(s, a)?,
         "search_docs" => crate::docs::search(&str_arg(a, "query").unwrap_or_default(), limit_arg(a, 8, 30))?,
-        // Already cut at `docs::MAX_READ`; cutting the JSON again could leave it invalid.
         "read_doc" => {
-            return crate::docs::read(&str_arg(a, "page").unwrap_or_default(), str_arg(a, "section").as_deref()).map(|v| v.to_string());
+            return crate::docs::read_with_budget(
+                &str_arg(a, "page").unwrap_or_default(),
+                str_arg(a, "section").as_deref(),
+                match a.get("offset") {
+                    None => 1,
+                    Some(v) => v.as_u64().filter(|n| *n > 0).ok_or("offset must be a positive integer (1-based line)")?,
+                },
+                limit_arg(a, 2000, 2000),
+                max_bytes,
+            )
+            .map(|v| v.to_string());
         }
         // Fails the way a bug in RustGIS would, for the agent's panic guard.
         #[cfg(test)]
@@ -241,7 +268,62 @@ pub fn run(s: &mut Session, call: &ToolCall) -> Result<String, String> {
         "test_panic" => panic!("a test tool panicked"),
         other => return Err(format!("unknown tool '{other}'")),
     };
-    Ok(clip(&v.to_string(), MAX_RESULT))
+    Ok(bounded_json(&v, tokens))
+}
+
+/// Serialize complete JSON. Oversized results become an explicit text preview envelope;
+/// the excerpt is a JSON string, so quotes, escapes and UTF-8 can never break the response.
+pub fn bounded_json(value: &Value, tokens: usize) -> String {
+    let text = value.to_string();
+    let max = output_bytes(tokens);
+    if text.len() <= max {
+        return text;
+    }
+    // Preserve the error reason before spending a small budget on preview metadata.
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        return bounded_string(&format!("error: {error}"), max);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let envelope = |keep: usize| {
+        let head: String = chars.iter().take(keep / 2).collect();
+        let tail: String = chars.iter().skip(chars.len().saturating_sub(keep - keep / 2)).collect();
+        json!({"truncated": true, "original_bytes": text.len(),
+            "output": format!("{head}\n… output truncated; request fewer rows or a narrower query …\n{tail}")})
+        .to_string()
+    };
+    let (mut low, mut high) = (0, chars.len());
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if envelope(mid).len() <= max {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let result = envelope(low);
+    if result.len() <= max {
+        return result;
+    }
+    // A tiny budget cannot hold the normal wrapper. Keep minimal truncation metadata,
+    // or an abbreviated marker when even that cannot fit.
+    let minimal = json!({"truncated": true}).to_string();
+    if minimal.len() <= max { minimal } else { bounded_string("truncated", max) }
+}
+
+/// Fit a diagnostic prefix inside a JSON string, including quotes and escaping.
+fn bounded_string(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let encoded = |keep: usize| json!(chars.iter().take(keep).collect::<String>()).to_string();
+    let (mut low, mut high) = (0, chars.len());
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if encoded(mid).len() <= max {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    encoded(low)
 }
 
 /// `text`, cut to `max` characters with a note when longer.
@@ -335,8 +417,9 @@ fn with_notices(r: Value, s: &Session, mark: u64) -> Value {
 /// converted).
 fn error_with_notices(e: String, s: &Session, mark: u64) -> String {
     let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).filter(|t| *t != e).collect();
-    // Clipped like a result: an MCP client gets the error as it is.
-    if said.is_empty() { e } else { clip(&format!("{e}\n{}", said.join("\n")), MAX_RESULT) }
+    // Preserve the original 8,000-character diagnostic assembly cap for MCP errors;
+    // the agent additionally applies its serialized output budget.
+    if said.is_empty() { e } else { clip(&format!("{e}\n{}", said.join("\n")), 8000) }
 }
 
 /// How well `words` match `hay` (all lower case): matched words, with whole-id hits counting more.

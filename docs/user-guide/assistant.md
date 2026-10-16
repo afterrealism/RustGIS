@@ -85,6 +85,32 @@ selected account and workspace.
 Weekly usage opens ChatGPT's settings page. RustGIS does not show a live percentage: there is
 no documented usage endpoint, and the tested live responses supplied no rate-limit headers.
 
+## Tool output limits
+
+The assistant can `search_docs` and `read_doc` to look up RustGIS features and commands.
+Each tool result defaults to an estimated **10,000 tokens**, following
+[Codex's default output budget](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/shell_spec.rs).
+A result is capped at an absolute **24,000 tokens**. Like
+[Codex's truncation utilities](https://github.com/openai/codex/blob/main/codex-rs/utils/output-truncation/src/lib.rs),
+the budget uses a byte-based estimate (four UTF-8 bytes per token), rather than an exact tokenizer.
+It includes JSON escaping and truncation metadata. This bounds individual results, not the
+entire conversation or all results from a batch.
+
+`RUSTGIS_ASSISTANT_TOOL_OUTPUT_TOKEN_LIMIT` changes the requested per-tool budget; it cannot
+bypass the 24,000-token ceiling. Embedding callers can set `Config::tool_output_token_limit`.
+MCP uses the 10,000-token default.
+
+Oversized successful results return an explicit, bounded text preview inside valid JSON, preserving the
+beginning and end; ask for fewer rows or a narrower search to get complete structured data.
+Documentation reads preserve complete lines and return `next_offset` when more remain: call
+`read_doc` again with the same page/section and that `offset`. `limit` defaults to 2000 lines,
+following [Pi's line-oriented read convention](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts).
+Invalid offsets (including zero, negative numbers, fractions and strings) return an error.
+Tiny output budgets use minimal truncation metadata or a diagnostic string prefix rather than
+returning bare `null`; extremely small budgets can only retain an abbreviated marker.
+Reading a section avoids loading an entire page. A single line that cannot fit produces an
+explicit error rather than silently skipping text.
+
 ## Privacy
 
 Requests go from RustGIS straight to the provider you chose, with your key. They carry your

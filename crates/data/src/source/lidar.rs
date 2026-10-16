@@ -39,7 +39,7 @@ impl LidarSource {
             indexed: false,
             notes,
         };
-        Ok(LidarSource { info, features })
+        Ok(LidarSource { info, features: features.into_vec() })
     }
 }
 

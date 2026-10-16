@@ -1414,6 +1414,7 @@ mod tests {
             client_id: String::new(),
             session: String::new(),
             reasoning: None,
+            tool_output_token_limit: rustgis_assistant::tools::DEFAULT_OUTPUT_TOKENS,
         };
         app.assistant.agent = Some(Agent::new(cfg.clone(), &app.session));
         let c = chatgpt::Credentials { access_token: "synthetic-chatgpt-token".into(), ..Default::default() };
@@ -1434,6 +1435,7 @@ mod tests {
             client_id: String::new(),
             session: String::new(),
             reasoning: None,
+            tool_output_token_limit: rustgis_assistant::tools::DEFAULT_OUTPUT_TOKENS,
         };
         let mut agent = Agent::new(cfg.clone(), &app.session);
         assert!(matches!(agent.ask("hello", &app.session), Step::Send(_)));

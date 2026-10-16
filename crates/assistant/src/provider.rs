@@ -153,6 +153,8 @@ pub struct Config {
     pub session: String,
     /// Whether the catalog offers reasoning for the selected model.
     pub reasoning: Option<bool>,
+    /// Requested tool output token estimate (default 10,000); the 24,000-token hard limit still applies.
+    pub tool_output_token_limit: usize,
 }
 
 impl std::fmt::Debug for Config {
@@ -182,6 +184,10 @@ impl Config {
             client_id: String::new(),
             session: String::new(),
             reasoning: None,
+            tool_output_token_limit: env("RUSTGIS_ASSISTANT_TOOL_OUTPUT_TOKEN_LIMIT")
+                .and_then(|s| s.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(crate::tools::DEFAULT_OUTPUT_TOKENS),
         };
         #[cfg(not(target_arch = "wasm32"))]
         {

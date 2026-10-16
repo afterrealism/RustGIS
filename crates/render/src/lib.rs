@@ -865,8 +865,11 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                 }
             }
         }
+        // Drawn from a copy thinned to under a third of a pixel: a detailed layer seen whole
+        // otherwise walks many vertices per pixel on every frame.
+        let thin_tol = view.camera.res / view.pixels_per_point.max(0.01) * rustgis_map::lod::THIN_PX;
         if globe.is_none() {
-            layer.projected_in(&flat, &key); // refresh the projected cache
+            layer.thinned_in(&flat, &key, thin_tol); // refresh the projected cache and its thinned copy
         }
         // Everything below only reads the layer: borrow rather than copy its data each frame.
         let layer: &rustgis_map::Layer = layer;
@@ -877,6 +880,12 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         } else {
             layer.projected_cache().iter().map(Option::as_ref).collect()
         };
+        // What the features draw from, and their extents for culling (on the flat map, cached).
+        // Only the fills and strokes below draw thinned: the selection, labels, aggregation and
+        // extrusion keep `geoms`, the full geometry, for their exact positions.
+        let drawn: Vec<Option<&Geometry>> =
+            if globe.is_some() { geoms.clone() } else { layer.thinned_cache(thin_tol).iter().map(Option::as_ref).collect() };
+        let extents = if globe.is_some() { &[][..] } else { layer.projected_extents() };
         let mut target = if offscreen { Pixmap::new(w, h)? } else { Pixmap::new(1, 1)? };
         let direct = !offscreen;
         // GPU-eligible: a plain vector layer drawn at full opacity with no mask, blend,
@@ -900,9 +909,9 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                 let px_per_m = view.pixels_per_point / map_ground_res(view, &flat);
                 effects::extrude(dest, &ctx, ds_ptr, &geoms, &rows, x, px_per_m, |r| layer.symbol(r));
             } else {
-                for (row, g) in geoms.iter().enumerate() {
+                for (row, g) in drawn.iter().enumerate() {
                     let Some(g) = g else { continue };
-                    if rows.get(row) != Some(&true) || !visible(&g.extent()) {
+                    if rows.get(row) != Some(&true) || !visible(&extents.get(row).copied().unwrap_or_else(|| g.extent())) {
                         continue;
                     }
                     // A picture draws in its row's turn, so graphics keep their order. (On the globe

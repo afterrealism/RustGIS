@@ -235,6 +235,38 @@ fn select_symbolize_undo_redo() {
 }
 
 #[test]
+fn undo_steps_share_the_layers_they_leave_alone() {
+    // #214: each undo step held a full copy of every layer, so a large layer grew by its whole
+    // size with every command (a rename, a style change).
+    let mut s = world();
+    s.map_mut().layers.iter_mut().for_each(|l| {
+        l.projected();
+    });
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    s.run("layer.rename", &json!({"layer": "Nations", "name": "States"})).unwrap();
+    let live = s.map().layer_by_name("States").unwrap();
+    let id = live.id;
+    for (snap, _, _) in &s.undo {
+        let old = snap.maps.iter().flat_map(|m| &m.layers).find(|l| l.id == id).unwrap();
+        assert!(old.dataset.features.shares(&live.dataset.features), "the snapshot copied the features");
+        assert_eq!(old.projected_cache().as_ptr(), live.projected_cache().as_ptr(), "the snapshot copied the projected geometry");
+    }
+    // An edit copies the layer it changes, once, and leaves the snapshot as it was.
+    let before = s.map().layer_by_name("Cities").unwrap().dataset.features.len();
+    s.run("edit.addFeature", &json!({"layer": "Cities", "geometry": {"type": "Point", "coordinates": [1.0, 2.0]}})).unwrap();
+    let cities = s.map().layer_by_name("Cities").unwrap();
+    let (snap, _, _) = s.undo.last().unwrap();
+    let old = snap.maps.iter().flat_map(|m| &m.layers).find(|l| l.id == cities.id).unwrap();
+    assert!(!old.dataset.features.shares(&cities.dataset.features));
+    assert_eq!((old.dataset.features.len(), cities.dataset.features.len()), (before, before + 1));
+    let states = s.map().layer_by_name("States").unwrap();
+    let old = snap.maps.iter().flat_map(|m| &m.layers).find(|l| l.id == id).unwrap();
+    assert!(old.dataset.features.shares(&states.dataset.features));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(s.map().layer_by_name("Cities").unwrap().dataset.features.len(), before);
+}
+
+#[test]
 fn geoprocessing_adds_layers_and_history() {
     let mut s = world();
     s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 200}})).unwrap();

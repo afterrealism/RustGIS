@@ -9,6 +9,7 @@ pub mod effects;
 pub mod globe;
 pub mod graphics;
 pub mod layout;
+pub mod lod;
 pub mod palette;
 pub mod presentation;
 pub mod projection;
@@ -144,8 +145,19 @@ pub struct Layer {
     /// Set for streamed layers, whose `dataset` holds the features of the last view read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<source::SourceLayer>,
+    /// Shared, like the features: an undo snapshot or other copy of the layer doesn't copy it.
     #[serde(skip)]
-    projected: Vec<Option<Geometry>>,
+    projected: std::sync::Arc<Vec<Option<Geometry>>>,
+    /// Each projected geometry's extent, for culling without walking its vertices.
+    #[serde(skip)]
+    projected_extents: std::sync::Arc<Vec<Extent>>,
+    /// The projected geometry's line and ring vertices (those thinning can drop).
+    #[serde(skip)]
+    projected_vertices: usize,
+    /// Thinned copies of the projected geometry by level, the latest used first (see [`lod`]);
+    /// `None` for a level that draws from the full geometry, thinning saving too little there.
+    #[serde(skip)]
+    thinned: std::sync::Arc<Vec<(i32, Option<std::sync::Arc<Vec<Option<Geometry>>>>)>>,
     #[serde(skip)]
     projected_rev: u64,
     /// The projection the cache is in.
@@ -187,7 +199,10 @@ impl Layer {
             design: design::Design::default(),
             raster: None,
             source: None,
-            projected: Vec::new(),
+            projected: Default::default(),
+            projected_extents: Default::default(),
+            projected_vertices: 0,
+            thinned: Default::default(),
             projected_rev: u64::MAX,
             projected_for: String::new(),
             geometry_rev: 0,
@@ -284,7 +299,7 @@ impl Layer {
         let ids: std::collections::HashSet<u64> =
             self.selection.iter().filter_map(|r| self.dataset.features.get(*r)).map(|f| f.id).collect();
         let fields = self.dataset.fields.len();
-        self.dataset.features = features;
+        self.dataset.features = features.into();
         for f in &mut self.dataset.features {
             f.attrs.resize(fields, rustgis_data::Value::Null);
         }
@@ -349,7 +364,13 @@ impl Layer {
     /// vertex index, which only the source geometry has.
     pub fn projected_in(&mut self, flat: &projection::Flat, key: &str) -> &[Option<Geometry>] {
         if self.projected_rev != self.geometry_rev || self.projected.len() != self.dataset.features.len() || self.projected_for != key {
-            self.projected = self.dataset.features.iter().map(|ft| ft.geometry.as_ref().map(|g| flat.project(g))).collect();
+            let projected: Vec<Option<Geometry>> =
+                self.dataset.features.iter().map(|ft| ft.geometry.as_ref().map(|g| flat.project(g))).collect();
+            self.projected_extents =
+                std::sync::Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect());
+            self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
+            self.projected = std::sync::Arc::new(projected);
+            self.thinned = Default::default();
             self.projected_rev = self.geometry_rev;
             self.projected_for = key.to_string();
         }
@@ -361,6 +382,47 @@ impl Layer {
         self.projected_in(&projection::Flat::Mercator, "mercator")
     }
 
+    /// The projected geometry (see [`Layer::projected_in`]) as drawn at a tolerance in projection
+    /// units: a thinned copy at the level just under it (see [`lod`]), made on first use, or the
+    /// geometry itself for a small layer. Read it back with [`Layer::thinned_cache`].
+    pub fn thinned_in(&mut self, flat: &projection::Flat, key: &str, tol: f64) -> &[Option<Geometry>] {
+        self.projected_in(flat, key);
+        let Some(level) = lod::level(tol).filter(|_| self.projected_vertices > lod::THIN_ABOVE) else { return &self.projected };
+        let levels = std::sync::Arc::make_mut(&mut self.thinned);
+        match levels.iter().position(|(l, _)| *l == level) {
+            Some(i) => {
+                let hit = levels.remove(i);
+                levels.insert(0, hit);
+            }
+            None => {
+                let t = lod::tolerance(level);
+                let copy: Vec<Option<Geometry>> = self.projected.iter().map(|g| g.as_ref().map(|g| lod::thin(g, t))).collect();
+                // The saving counts against every vertex the copy holds, points included.
+                let all: usize = self.projected.iter().flatten().map(lod::vertices).sum();
+                let kept: usize = copy.iter().flatten().map(lod::vertices).sum();
+                let worth = (kept as f64) <= all as f64 * (1.0 - lod::MIN_SAVING);
+                levels.insert(0, (level, worth.then(|| std::sync::Arc::new(copy))));
+                levels.truncate(lod::LEVELS_KEPT);
+            }
+        }
+        self.thinned_cache(tol)
+    }
+
+    /// The geometry from the last [`Layer::thinned_in`] call at this tolerance, without making
+    /// it: the full projected geometry when there is no thinned copy for it.
+    pub fn thinned_cache(&self, tol: f64) -> &[Option<Geometry>] {
+        let level = lod::level(tol).filter(|_| self.projected_vertices > lod::THIN_ABOVE);
+        match level.and_then(|level| self.thinned.iter().find(|(l, _)| *l == level)) {
+            Some((_, Some(g))) if g.len() == self.projected.len() => g,
+            _ => &self.projected,
+        }
+    }
+
+    /// Each projected geometry's extent, row for row with [`Layer::projected_cache`].
+    pub fn projected_extents(&self) -> &[Extent] {
+        &self.projected_extents
+    }
+
     /// The Web Mercator copies from the last [`Layer::projected`] call, without refreshing them:
     /// call `projected` first (it needs `&mut self`) whenever the geometry may have changed.
     pub fn projected_cache(&self) -> &[Option<Geometry>] {
@@ -369,7 +431,10 @@ impl Layer {
 
     /// Drops the projected geometry cache (the feature cache).
     pub fn clear_cache(&mut self) {
-        self.projected = Vec::new();
+        self.projected = Default::default();
+        self.projected_extents = Default::default();
+        self.projected_vertices = 0;
+        self.thinned = Default::default();
         self.projected_rev = u64::MAX;
         self.projected_for.clear();
     }
@@ -901,6 +966,60 @@ mod tests {
         d.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![Value::Int(1)]);
         d.push(Some(Geometry::Point(Coord::new(10.0, 10.0))), vec![Value::Int(2)]);
         d
+    }
+
+    /// A layer of one long line along the equator with `n` vertices.
+    fn long_line(n: usize) -> Layer {
+        let mut d = Dataset::new("line", GeometryType::Polyline, vec![]);
+        let run = (0..n).map(|i| Coord::new(-170.0 + 340.0 * i as f64 / n as f64, 0.0)).collect();
+        d.push(Some(Geometry::Line(vec![run])), vec![]);
+        Layer::new(1, d)
+    }
+
+    #[test]
+    fn a_detailed_layer_draws_from_a_thinned_copy() {
+        let flat = projection::Flat::Mercator;
+        let mut l = long_line(lod::THIN_ABOVE + 1000);
+        let full = lod::vertices(l.projected()[0].as_ref().unwrap());
+        // Seen whole (about 40 km a pixel), one vertex every 8 km (the level under 12 km) is enough.
+        let thinned = lod::vertices(l.thinned_in(&flat, "mercator", 12_000.0)[0].as_ref().unwrap());
+        assert!(thinned < full / 40, "{thinned} of {full} vertices drawn");
+        assert_eq!(lod::vertices(l.thinned_cache(12_000.0)[0].as_ref().unwrap()), thinned);
+        // Zoomed in past its vertex spacing, every vertex draws.
+        assert_eq!(lod::vertices(l.thinned_in(&flat, "mercator", 0.001)[0].as_ref().unwrap()), full);
+        // Its extents are cached row for row, and a clone shares the caches.
+        assert_eq!(l.projected_extents().len(), 1);
+        let copy = l.clone();
+        assert_eq!(copy.projected_cache().as_ptr(), l.projected_cache().as_ptr());
+        assert_eq!(copy.thinned_cache(12_000.0).as_ptr(), l.thinned_cache(12_000.0).as_ptr());
+        // A change of geometry drops the thinned copies with the projection.
+        l.touch_geometry();
+        l.projected();
+        assert_eq!(l.thinned_cache(12_000.0).as_ptr(), l.projected_cache().as_ptr());
+    }
+
+    #[test]
+    fn a_level_saving_little_draws_in_full() {
+        // Zoomed in past the vertex spacing, thinning drops nothing: no copy is kept.
+        let flat = projection::Flat::Mercator;
+        let mut l = long_line(lod::THIN_ABOVE + 1000);
+        l.projected();
+        assert_eq!(l.thinned_in(&flat, "mercator", 1.0).as_ptr(), l.projected_cache().as_ptr());
+        // Nor for points, however many.
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![]);
+        let pts = (0..lod::THIN_ABOVE + 10).map(|i| Coord::new(i as f64 * 1e-6, 0.0)).collect();
+        d.push(Some(Geometry::MultiPoint(pts)), vec![]);
+        let mut p = Layer::new(2, d);
+        p.projected();
+        assert_eq!(p.thinned_in(&flat, "mercator", 1e6).as_ptr(), p.projected_cache().as_ptr());
+    }
+
+    #[test]
+    fn a_small_layer_always_draws_in_full() {
+        let flat = projection::Flat::Mercator;
+        let mut l = long_line(1000);
+        let full = l.projected().to_vec();
+        assert_eq!(l.thinned_in(&flat, "mercator", 1e6), &full[..]);
     }
 
     #[test]

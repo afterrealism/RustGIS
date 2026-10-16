@@ -360,7 +360,7 @@ fn strip_windows(p: &mut Project) {
     for l in p.maps.iter_mut().flat_map(|m| m.layers.iter_mut()) {
         if let Some(src) = &mut l.source {
             src.reset();
-            l.dataset.features = Vec::new();
+            l.dataset.features = Vec::new().into();
             l.selection.clear();
             l.touch_geometry();
         }

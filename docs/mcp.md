@@ -170,10 +170,9 @@ These behavioral tests in `crates/assistant/src/relay.rs` check the requirements
 | `run_tool` | Runs a geoprocessing tool; its output is added to the map as a new layer (with `layersAdded` and `notices` as for `run_command`) |
 | `read_features` | A layer's attribute rows, optionally only those matching a where clause, sorted |
 | `search_docs` | Searches this documentation and returns the best matching sections |
-| `read_doc` | Reads a documentation page as Markdown, or one section of it |
+| `read_doc` | Reads a documentation page or section as Markdown; `offset` (1-based line) and `limit` (default 2000 lines) page through long results using `next_offset` |
 
-These are the [AI Assistant](user-guide/assistant.md)'s tools, plus `view_map` and the
-documentation tools. Every page of this documentation is also a resource
+These are the [AI Assistant](user-guide/assistant.md)'s tools, plus `view_map`. Every page of this documentation is also a resource
 (`rustgis://docs/cli.md`, `rustgis://docs/user-guide/maps.md`…) that a client can attach to a
 conversation.
 
