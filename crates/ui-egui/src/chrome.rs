@@ -523,6 +523,7 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
             ("ui.pane.assistant", "AI Assistant", "Analyze › AI"),
             ("ui.pane.sql", "SQL Pane", "Analyze › Workflows"),
             ("ui.theme", "Toggle Dark Mode", "View"),
+            ("ui.map.gpu", "Toggle GPU Rendering", "View"),
             ("ui.exportMap", "Export Map…", "Publish › Output"),
             ("ui.checkUpdate", "Check for Updates…", "Help › Help"),
         ] {

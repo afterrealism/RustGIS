@@ -293,7 +293,7 @@ fn split_view(app: &mut RustGisApp, ui: &mut Ui, other: usize, rect: Rect, t: &T
             app.map.gpu_renderer = Some(std::sync::Arc::new(crate::mapgpu::GpuMapRenderer::new(rs)));
         }
         if let (Some(r), Some(rs)) = (&app.map.gpu_renderer, &app.map.render_state)
-            && let Some(rustgis_engine::render::Rendered2::Gpu(scene)) =
+            && let Some(rustgis_engine::render::RenderOutput::Gpu(scene)) =
                 rustgis_engine::render::render_backend(m, &view, rustgis_engine::render::Backend::Gpu)
         {
             let bufs = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, m.camera, [w, h], ppp);
@@ -462,7 +462,7 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 app.map.gpu_renderer = Some(std::sync::Arc::new(crate::mapgpu::GpuMapRenderer::new(rs)));
             }
             if let (Some(r), Some(rs)) = (&app.map.gpu_renderer, &app.map.render_state)
-                && let Some(rustgis_engine::render::Rendered2::Gpu(scene)) =
+                && let Some(rustgis_engine::render::RenderOutput::Gpu(scene)) =
                     rustgis_engine::render::render_backend(app.session.map_mut(), &view, rustgis_engine::render::Backend::Gpu)
             {
                 let bufs = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, cam, [w, h], render_ppp);
@@ -1076,8 +1076,10 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
             p.line_segment([c + a, c + b], Stroke::new(2.0, Color32::from_black_alpha(160)));
         }
     }
-    // The magnifier: twice the map under the pointer, in a lens beside it.
+    // The magnifier: twice the map under the pointer, in a lens beside it. It samples the CPU
+    // texture, which GPU frames don't update — hide the lens while the GPU backend is drawing.
     if app.map.magnifier
+        && app.map.gpu_frame.is_none()
         && let (Some(tex), Some(ptr)) = (&app.map.texture, ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)))
     {
         let r = 70.0;

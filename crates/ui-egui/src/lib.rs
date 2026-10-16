@@ -1059,7 +1059,7 @@ impl RustGisApp {
                 self.ui.dark_follows_system = false;
             }
             "ui.map.gpu" => {
-                self.map.gpu_enabled = !self.map.gpu_enabled;
+                self.map.gpu_enabled = p.get("on").and_then(Value::as_bool).unwrap_or(!self.map.gpu_enabled);
                 if let Some(save) = &self.services.save_pref {
                     save("ui.map.gpu", if self.map.gpu_enabled { "1" } else { "0" });
                 }

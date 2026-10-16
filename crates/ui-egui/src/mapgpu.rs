@@ -321,14 +321,17 @@ impl SceneTarget {
 }
 
 /// Records the scene's MSAA render pass into `enc` (resolves into `tgt.resolve_tex`).
-fn record_scene(r: &GpuMapRenderer, draws: &[SceneDraw], tgt: &SceneTarget, enc: &mut wgpu::CommandEncoder) {
+fn record_scene(r: &GpuMapRenderer, draws: &[SceneDraw], clear: [f32; 4], tgt: &SceneTarget, enc: &mut wgpu::CommandEncoder) {
     let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("mapgpu_scene"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &tgt.msaa_view,
             depth_slice: None,
             resolve_target: Some(&tgt.resolve_tex.create_view(&wgpu::TextureViewDescriptor::default())),
-            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Discard },
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: clear[3] as f64 }),
+                store: wgpu::StoreOp::Discard,
+            },
         })],
         ..Default::default()
     });
@@ -362,6 +365,8 @@ pub(crate) enum SceneDraw {
 /// for a moved camera (`set_camera`).
 pub(crate) struct SceneBuffers {
     pub draws: Vec<SceneDraw>,
+    /// The scene's clear colour (the basemap's water), used as the MSAA pass's load op.
+    pub clear: [f32; 4],
     pub size: [f64; 2],
     pub ppp: f32,
     /// Scenes containing CPU-rasterized image runs can't fast-path a camera move (images are
@@ -485,7 +490,7 @@ impl SceneBuffers {
                 }
             }
         }
-        SceneBuffers { draws, size, ppp, has_images }
+        SceneBuffers { draws, clear: scene.clear, size, ppp, has_images }
     }
 
     /// Rewrites every command's camera uniforms for a moved camera — pan/zoom without
@@ -554,7 +559,7 @@ impl CallbackTrait for SceneCallback {
             *guard = SceneTarget::new(device, &self.renderer, [w, h]);
         }
         if let Some(tgt) = guard.as_ref() {
-            record_scene(&self.renderer, &self.buffers.draws, tgt, egui_encoder);
+            record_scene(&self.renderer, &self.buffers.draws, self.buffers.clear, tgt, egui_encoder);
         }
         Vec::new()
     }
@@ -628,13 +633,12 @@ mod tests {
 
     /// A headless wgpu render state (the egui_kittest recipe). `None` on hosts without any
     /// adapter — CI without a GPU skips these tests.
-    /// A headless wgpu render state (the egui_kittest recipe). `None` on hosts without any
-    /// adapter — CI without a GPU skips these tests. `backends` defaults to all; the web app
-    /// is GL-forced (`apps/rustgis-web`), so the suite also runs the world sample over GL.
     fn headless_render_state() -> Option<RenderState> {
         headless_render_state_on(wgpu::Backends::all())
     }
 
+    /// `backends` selects the wgpu backends; the web app is GL-forced (`apps/rustgis-web`),
+    /// so the suite also runs the world sample over GL.
     fn headless_render_state_on(backends: wgpu::Backends) -> Option<RenderState> {
         let setup = egui_wgpu::WgpuSetup::CreateNew({
             let mut s = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
@@ -660,6 +664,7 @@ mod tests {
         let v =
             |x: f32, y: f32| MeshVertex { position: [x, y], normal: [0.0, 0.0], color: [1.0, 0.0, 0.0, 1.0], stroke_px: 0.0, _pad: 0.0 };
         let scene = GpuScene {
+            clear: [0.0, 0.0, 0.0, 1.0],
             cmds: vec![
                 DrawCmd::Mesh { origin: [0.0, 0.0], vertices: vec![v(0.0, 0.0), v(100.0, 0.0), v(0.0, 100.0)], indices: vec![0, 1, 2] },
                 DrawCmd::Points {
@@ -683,10 +688,10 @@ mod tests {
 
     use rustgis_engine::data::{Dataset, Geometry, GeometryType};
     use rustgis_engine::map::{Map, Marker, Renderer, Rgba, Symbol};
-    use rustgis_engine::render::{self, Backend, Rendered2, View};
+    use rustgis_engine::render::{self, Backend, RenderOutput, View};
 
     fn world_view() -> View {
-        View { width: 640.0, height: 400.0, pixels_per_point: 1.0, camera: Camera::world(), dark: false }
+        View { width: 640.0, height: 400.0, pixels_per_point: 1.0, camera: Camera::world() }
     }
 
     /// Renders the GpuScene into an offscreen texture and reads it back (premultiplied RGBA,
@@ -694,7 +699,7 @@ mod tests {
     fn gpu_render_offscreen_on(map: &mut Map, view: &View, backends: wgpu::Backends) -> Option<Vec<u8>> {
         let rs = headless_render_state_on(backends)?;
         let r = GpuMapRenderer::new(&rs);
-        let Some(Rendered2::Gpu(scene)) = render::render_backend(map, view, Backend::Gpu) else { panic!("gpu-compatible scene") };
+        let Some(RenderOutput::Gpu(scene)) = render::render_backend(map, view, Backend::Gpu) else { panic!("gpu-compatible scene") };
         let bufs = SceneBuffers::from_scene(
             &rs.device,
             &rs.queue,
@@ -711,7 +716,7 @@ mod tests {
         // The production path: MSAA offscreen pass, resolved to a plain texture.
         let tgt = SceneTarget::new(&rs.device, &r, [w, h])?;
         let mut enc = rs.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("parity") });
-        record_scene(&r, &bufs.draws, &tgt, &mut enc);
+        record_scene(&r, &bufs.draws, bufs.clear, &tgt, &mut enc);
         // Buffer copies need 256-aligned rows; pad and strip on readback.
         let row_bytes = (w * 4).div_ceil(256) * 256;
         let buf = rs.device.create_buffer(&wgpu::BufferDescriptor {
@@ -859,9 +864,15 @@ mod tests {
         assert_parity_on("world sample (GL)", world_map, &world_view(), wgpu::Backends::GL);
     }
 
+    fn world_map_midnight() -> Map {
+        let mut m = world_map();
+        m.basemap = rustgis_engine::map::Basemap::Midnight;
+        m
+    }
+
     #[test]
-    fn parity_dark_world_sample() {
-        assert_parity("dark world sample", world_map, &View { dark: true, ..world_view() });
+    fn parity_midnight_world_sample() {
+        assert_parity("midnight world sample", world_map_midnight, &world_view());
     }
 
     #[test]

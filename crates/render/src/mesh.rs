@@ -29,12 +29,18 @@ fn rel(c: Coord, origin: [f64; 2]) -> [f32; 2] {
 /// last — the exact rule of `Ctx::ring_path` (the dropped point doesn't become the anchor).
 /// `map_per_px` is map units per physical pixel (`camera.res / pixels_per_point` on the flat
 /// map, where `to_screen` is affine).
+///
+/// Non-finite points (hostile files) are dropped first: lyon's path builder *panics* on NaN,
+/// and the CPU path breaks the ring there anyway, so the GPU breaks it the same place.
 fn decimate(ring: &[Coord], map_per_px: f64) -> Vec<Coord> {
     let threshold = 0.35 * map_per_px;
     let n = ring.len();
     let mut out = Vec::with_capacity(n.min(1024));
     let mut last: Option<Coord> = None;
     for (i, c) in ring.iter().enumerate() {
+        if !c.is_finite() {
+            continue;
+        }
         let keep = !matches!(last, Some(l) if (c.x - l.x).abs() + (c.y - l.y).abs() < threshold && i + 1 != n);
         if keep {
             out.push(*c);
@@ -65,14 +71,15 @@ fn path_of(rings: &[Vec<Coord>], origin: [f64; 2], map_per_px: f64, min_points: 
 }
 
 /// Tessellates polygon fills (all rings in one EvenOdd path, like the CPU's `Ctx::polygon`).
-/// `None` when nothing would draw or tessellation fails (the caller falls the layer back to
-/// the CPU pixmap).
+/// `Ok(None)` when nothing would draw; `Err` when lyon fails (the caller falls the layer back
+/// to the CPU pixmap — tiny-skia still draws geometry lyon refuses). Non-finite coordinates
+/// never reach lyon: `decimate` drops them.
 pub(crate) fn fill_polygon(
     polys: &[Vec<Vec<Coord>>],
     origin: [f64; 2],
     color: [f32; 4],
     map_per_px: f64,
-) -> Option<(Vec<MeshVertex>, Vec<u32>)> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
     let mut out: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
     let mut tess = FillTessellator::new();
     for rings in polys {
@@ -85,9 +92,9 @@ pub(crate) fn fill_polygon(
                 MeshVertex { position: [p.x, p.y], normal: [0.0, 0.0], color, stroke_px: 0.0, _pad: 0.0 }
             }),
         )
-        .ok()?;
+        .map_err(|_| ())?;
     }
-    (!out.indices.is_empty()).then_some((out.vertices, out.indices))
+    Ok((!out.indices.is_empty()).then_some((out.vertices, out.indices)))
 }
 
 /// Strokes rings (closed, polygon outlines) or line parts (open) at width 1.0; the vertex
@@ -101,7 +108,7 @@ fn stroke(
     map_per_px: f64,
     closed: bool,
     min_points: usize,
-) -> Option<(Vec<MeshVertex>, Vec<u32>)> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
     let mut out: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
     let mut tess = StrokeTessellator::new();
     let options = StrokeOptions::default().with_line_width(1.0).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
@@ -127,9 +134,9 @@ fn stroke(
                 MeshVertex { position: [p.x - n.x * 0.5, p.y - n.y * 0.5], normal: [n.x, n.y], color, stroke_px: width_px, _pad: 0.0 }
             }),
         )
-        .ok()?;
+        .map_err(|_| ())?;
     }
-    (!out.indices.is_empty()).then_some((out.vertices, out.indices))
+    Ok((!out.indices.is_empty()).then_some((out.vertices, out.indices)))
 }
 
 /// Polygon outlines: every ring stroked (the CPU strokes exterior and holes alike).
@@ -139,7 +146,7 @@ pub(crate) fn stroke_rings(
     color: [f32; 4],
     width_px: f32,
     map_per_px: f64,
-) -> Option<(Vec<MeshVertex>, Vec<u32>)> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
     let rings: Vec<Vec<Coord>> = polys.iter().flatten().cloned().collect();
     stroke(&rings, origin, color, width_px, map_per_px, true, 3)
 }
@@ -151,7 +158,7 @@ pub(crate) fn stroke_lines(
     color: [f32; 4],
     width_px: f32,
     map_per_px: f64,
-) -> Option<(Vec<MeshVertex>, Vec<u32>)> {
+) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()> {
     stroke(parts, origin, color, width_px.max(0.5), map_per_px, false, 2)
 }
 
@@ -176,17 +183,19 @@ pub(crate) fn marker_instances(c: Coord, origin: [f64; 2], s: &Symbol, ppp: f32,
     out
 }
 
-fn extend_mesh(v: &mut Vec<MeshVertex>, i: &mut Vec<u32>, part: Option<(Vec<MeshVertex>, Vec<u32>)>) {
-    if let Some((pv, pi)) = part {
+fn extend_mesh(v: &mut Vec<MeshVertex>, i: &mut Vec<u32>, part: Result<Option<(Vec<MeshVertex>, Vec<u32>)>, ()>) -> Result<(), ()> {
+    if let Some((pv, pi)) = part? {
         let base = v.len() as u32;
         v.extend(pv);
         i.extend(pi.into_iter().map(|x| x + base));
     }
+    Ok(())
 }
 
 /// Appends one feature's GPU geometry, in the CPU path's per-feature order (fill, then
 /// outline — `Ctx::feature`). Transparent fills/strokes are skipped: tiny-skia draws them as
-/// no-ops, and not emitting them is identical output for less work.
+/// no-ops, and not emitting them is identical output for less work. `Err` when lyon refuses
+/// the geometry — the layer then falls back to the CPU path entirely.
 fn append_geometry(
     v: &mut Vec<MeshVertex>,
     i: &mut Vec<u32>,
@@ -197,33 +206,35 @@ fn append_geometry(
     wireframe: bool,
     ppp: f32,
     map_per_px: f64,
-) {
+) -> Result<(), ()> {
     match g {
         Geometry::Point(c) => pts.extend(marker_instances(*c, origin, s, ppp, None)),
         Geometry::MultiPoint(cs) => cs.iter().for_each(|c| pts.extend(marker_instances(*c, origin, s, ppp, None))),
         Geometry::Line(parts) => {
             if s.stroke.a() > 0 {
-                extend_mesh(v, i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px));
+                extend_mesh(v, i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px))?;
             }
         }
         Geometry::Polygon(polys) if wireframe => {
-            extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke.with_alpha(255)), s.stroke_width.max(1.0) * ppp, map_per_px));
+            extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke.with_alpha(255)), s.stroke_width.max(1.0) * ppp, map_per_px))?;
         }
         Geometry::Polygon(polys) => {
             if s.fill.a() > 0 {
-                extend_mesh(v, i, fill_polygon(polys, origin, premul(s.fill), map_per_px));
+                extend_mesh(v, i, fill_polygon(polys, origin, premul(s.fill), map_per_px))?;
             }
             if s.stroke_width > 0.0 && s.stroke.a() > 0 {
-                extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px));
+                extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px))?;
             }
         }
     }
+    Ok(())
 }
 
 /// Collects one GPU-eligible layer into Mesh/Points commands. `geoms`, `rows` and `visible`
 /// are the render loop's own (projected geometries, row filter, extent cull), so the GPU
-/// draws exactly the features the CPU would. Returns the layer's origin for
-/// [`collect_highlight`], `None` when nothing visible was collected.
+/// draws exactly the features the CPU would. `Ok(None)` when nothing visible was collected;
+/// `Err(())` when lyon refused a feature — the caller then draws the whole layer with
+/// tiny-skia instead (nothing is pushed part-way).
 pub(crate) fn collect_layer(
     cmds: &mut Vec<DrawCmd>,
     layer: &Layer,
@@ -233,7 +244,7 @@ pub(crate) fn collect_layer(
     wireframe: bool,
     ppp: f32,
     map_per_px: f64,
-) -> Option<[f64; 2]> {
+) -> Result<Option<[f64; 2]>, ()> {
     // Stable origin: the centre of the drawn features' extent. Two passes cost one extra
     // extent fold — the same order of work as the culling pass the CPU render already does.
     let mut ext = Extent::EMPTY;
@@ -245,7 +256,7 @@ pub(crate) fn collect_layer(
         ext = ext.union(&g.extent());
     }
     if ext.is_empty() {
-        return None;
+        return Ok(None);
     }
     let origin = [ext.center().x, ext.center().y];
     let (mut v, mut i, mut pts) = (Vec::new(), Vec::new(), Vec::new());
@@ -254,7 +265,7 @@ pub(crate) fn collect_layer(
         if rows.get(row) != Some(&true) || !visible(&g.extent()) {
             continue;
         }
-        append_geometry(&mut v, &mut i, &mut pts, g, &layer.symbol(row), origin, wireframe, ppp, map_per_px);
+        append_geometry(&mut v, &mut i, &mut pts, g, &layer.symbol(row), origin, wireframe, ppp, map_per_px)?;
     }
     if !i.is_empty() {
         cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
@@ -262,12 +273,12 @@ pub(crate) fn collect_layer(
     if !pts.is_empty() {
         cmds.push(DrawCmd::Points { origin, instances: pts });
     }
-    Some(origin)
+    Ok(Some(origin))
 }
 
 /// Selection highlight of one feature, after its layer (`Ctx::highlight`): haloed markers,
 /// a wider cyan under-stroke for lines, translucent cyan fill + outline for polygons.
-pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbol, ppp: f32, map_per_px: f64) {
+pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbol, ppp: f32, map_per_px: f64) -> Result<(), ()> {
     let e = g.extent();
     let origin = [e.center().x, e.center().y];
     match g {
@@ -278,21 +289,22 @@ pub(crate) fn collect_highlight(cmds: &mut Vec<DrawCmd>, g: &Geometry, s: &Symbo
         }
         Geometry::Line(parts) => {
             let (mut v, mut i) = (Vec::new(), Vec::new());
-            extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(SELECTION), (s.stroke_width + 3.0) * ppp, map_per_px));
-            extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px));
+            extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(SELECTION), (s.stroke_width + 3.0) * ppp, map_per_px))?;
+            extend_mesh(&mut v, &mut i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px))?;
             if !i.is_empty() {
                 cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
             }
         }
         Geometry::Polygon(polys) => {
             let (mut v, mut i) = (Vec::new(), Vec::new());
-            extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(SELECTION.with_alpha(40)), map_per_px));
-            extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(SELECTION), 2.0 * ppp, map_per_px));
+            extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(SELECTION.with_alpha(40)), map_per_px))?;
+            extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(SELECTION), 2.0 * ppp, map_per_px))?;
             if !i.is_empty() {
                 cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
             }
         }
     }
+    Ok(())
 }
 
 /// The built-in basemap's land polygons (already in map units), fill plus optional outline.
@@ -304,24 +316,33 @@ pub(crate) fn collect_basemap(
     outline: Rgba,
     ppp: f32,
     map_per_px: f64,
-) {
+) -> Result<(), ()> {
     let (mut v, mut i) = (Vec::new(), Vec::new());
-    extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(land), map_per_px));
+    extend_mesh(&mut v, &mut i, fill_polygon(polys, origin, premul(land), map_per_px))?;
     if outline.a() > 0 {
-        extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(outline), 0.6 * ppp, map_per_px));
+        extend_mesh(&mut v, &mut i, stroke_rings(polys, origin, premul(outline), 0.6 * ppp, map_per_px))?;
     }
     if !i.is_empty() {
         cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
     }
+    Ok(())
 }
 
 /// The graticule lines (already in map units).
-pub(crate) fn collect_graticule(cmds: &mut Vec<DrawCmd>, lines: &[Vec<Coord>], origin: [f64; 2], grat: Rgba, ppp: f32, map_per_px: f64) {
+pub(crate) fn collect_graticule(
+    cmds: &mut Vec<DrawCmd>,
+    lines: &[Vec<Coord>],
+    origin: [f64; 2],
+    grat: Rgba,
+    ppp: f32,
+    map_per_px: f64,
+) -> Result<(), ()> {
     let (mut v, mut i) = (Vec::new(), Vec::new());
-    extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), 0.6 * ppp, map_per_px));
+    extend_mesh(&mut v, &mut i, stroke_lines(lines, origin, premul(grat), 0.6 * ppp, map_per_px))?;
     if !i.is_empty() {
         cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -345,7 +366,7 @@ mod tests {
     #[test]
     fn polygon_with_hole_tessellates_evenodd() {
         let polys = vec![vec![square(0.0, 0.0, 100.0), square(30.0, 30.0, 40.0)]];
-        let (v, i) = fill_polygon(&polys, [0.0, 0.0], [1.0, 0.0, 0.0, 1.0], 0.0).expect("tessellate");
+        let (v, i) = fill_polygon(&polys, [0.0, 0.0], [1.0, 0.0, 0.0, 1.0], 0.0).expect("tessellate").expect("non-empty");
         assert!(i.len() >= 24, "a hole needs interior triangles: {}", i.len());
         assert!(!point_covered(&v, &i, 50.0, 50.0), "hole center must stay uncovered");
         // (10, 5): inside, and not on a tessellation diagonal (edge points read as uncovered).
@@ -370,7 +391,7 @@ mod tests {
     #[test]
     fn stroke_vertices_carry_centerline_and_normal() {
         let parts = vec![vec![Coord::new(0.0, 0.0), Coord::new(100.0, 0.0)]];
-        let (v, i) = stroke_lines(&parts, [0.0, 0.0], [0.0, 0.0, 1.0, 1.0], 2.0, 0.0).expect("stroke");
+        let (v, i) = stroke_lines(&parts, [0.0, 0.0], [0.0, 0.0, 1.0, 1.0], 2.0, 0.0).expect("stroke").expect("non-empty");
         assert!(!i.is_empty());
         for vtx in &v {
             assert!(vtx.position[1].abs() < 1e-4, "centerline stays on the path: y={}", vtx.position[1]);
@@ -383,7 +404,7 @@ mod tests {
     #[test]
     fn ring_stroke_has_no_width_floor_and_closes() {
         let polys = vec![vec![square(0.0, 0.0, 10.0)]];
-        let (v, i) = stroke_rings(&polys, [0.0, 0.0], [0.0; 4], 0.2, 0.0).expect("stroke");
+        let (v, i) = stroke_rings(&polys, [0.0, 0.0], [0.0; 4], 0.2, 0.0).expect("stroke").expect("non-empty");
         assert!(!i.is_empty());
         assert!(v.iter().all(|x| x.stroke_px == 0.2), "polygon outlines keep their exact width");
     }
@@ -391,7 +412,7 @@ mod tests {
     #[test]
     fn line_width_floors_at_half_pixel() {
         let parts = vec![vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0)]];
-        let (v, _) = stroke_lines(&parts, [0.0, 0.0], [0.0; 4], 0.2, 0.0).expect("stroke");
+        let (v, _) = stroke_lines(&parts, [0.0, 0.0], [0.0; 4], 0.2, 0.0).expect("stroke").expect("non-empty");
         assert!(v.iter().all(|x| x.stroke_px == 0.5));
     }
 

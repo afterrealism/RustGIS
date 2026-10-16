@@ -201,7 +201,7 @@ pub enum Backend {
 }
 
 /// A finished render in either backend.
-pub enum Rendered2 {
+pub enum RenderOutput {
     Cpu(Rendered),
     Gpu(gpu_scene::GpuScene),
 }
@@ -210,7 +210,7 @@ pub enum Rendered2 {
 /// [`render`]; `Backend::Gpu` draws what it can as tessellated meshes and everything else
 /// (basemap, tiles, rasters, masked/blended/transparent layers) as CPU-rasterized images in
 /// the same z-order.
-pub fn render_backend(map: &mut Map, view: &View, backend: Backend) -> Option<Rendered2> {
+pub fn render_backend(map: &mut Map, view: &View, backend: Backend) -> Option<RenderOutput> {
     render_with_backend(map, view, false, backend)
 }
 
@@ -625,9 +625,9 @@ pub fn render(map: &mut Map, view: &View) -> Option<Rendered> {
 
 fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Rendered> {
     match render_with_backend(map, view, full_res_rasters, Backend::Cpu) {
-        Some(Rendered2::Cpu(r)) => Some(r),
-        // The Cpu backend never produces Rendered2::Gpu.
-        Some(Rendered2::Gpu(_)) | None => None,
+        Some(RenderOutput::Cpu(r)) => Some(r),
+        // The Cpu backend never produces RenderOutput::Gpu.
+        Some(RenderOutput::Gpu(_)) | None => None,
     }
 }
 
@@ -644,7 +644,7 @@ fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bo
     Some(())
 }
 
-fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<Rendered2> {
+fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<RenderOutput> {
     let (w, h) = view.pixel_size();
     let mut pm = Pixmap::new(w, h)?;
     // Streamed layers read the view: in the background for the screen, in place for an export
@@ -685,10 +685,14 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
     let (water, land, outline, grat) = map.basemap.palette();
     match &globe {
         Some(g) => globe_backdrop(&mut pm, g, water, map.view.effects.stars, view.pixels_per_point as f32),
-        None => pm.fill(tiny_skia::Color::from_rgba8(water.r(), water.g(), water.b(), 255)),
+        None if !gpu => pm.fill(tiny_skia::Color::from_rgba8(water.r(), water.g(), water.b(), 255)),
+        // The Gpu scene carries the water backdrop as its clear colour instead — an
+        // always-full-screen Image here would poison `has_images` and kill the camera
+        // fast path.
+        None => {}
     }
-    // The water/globe backdrop fills the accumulator, so the first flush carries it.
-    let mut cpu_dirty = true;
+    // Set when tiny-skia actually rasterizes into the accumulator.
+    let mut cpu_dirty = false;
     if land != water {
         let fill = paint(land, 1.0);
         let stroke = (outline.a() > 0).then(|| (paint(outline, 1.0), 0.6));
@@ -702,11 +706,18 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             if let Geometry::Polygon(polys) = g
                 && visible(&g.extent())
             {
+                let mut tessellated = false;
                 if gpu {
                     flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
                     let e = g.extent();
-                    mesh::collect_basemap(&mut cmds, polys, [e.center().x, e.center().y], land, outline, ctx.ppp, map_per_px);
-                } else {
+                    tessellated =
+                        mesh::collect_basemap(&mut cmds, polys, [e.center().x, e.center().y], land, outline, ctx.ppp, map_per_px).is_ok();
+                }
+                if gpu && !tessellated {
+                    // Lyon refused: tiny-skia still draws the outline.
+                    ctx.polygon(&mut pm, polys, Some(fill.clone()), stroke.clone());
+                    cpu_dirty = true;
+                } else if !gpu {
                     ctx.polygon(&mut pm, polys, Some(fill.clone()), stroke.clone());
                 }
             }
@@ -747,15 +758,18 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             lines.into_iter().map(|l| l.into_iter().map(lonlat_to_merc).collect()).collect()
         };
         if gpu {
-            flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
             let mut e = Extent::EMPTY;
             for l in &lines {
                 for c in l {
                     e.expand(*c);
                 }
             }
-            if !e.is_empty() {
-                mesh::collect_graticule(&mut cmds, &lines, [e.center().x, e.center().y], grat, ctx.ppp, map_per_px);
+            flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
+            let tessellated = !e.is_empty()
+                && mesh::collect_graticule(&mut cmds, &lines, [e.center().x, e.center().y], grat, ctx.ppp, map_per_px).is_ok();
+            if !tessellated {
+                ctx.line(&mut pm, &lines, &p, 0.6);
+                cpu_dirty = true;
             }
         } else {
             ctx.line(&mut pm, &lines, &p, 0.6);
@@ -866,10 +880,14 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         // aggregation, extrusion or per-row graphics (an inert aggregation/extrusion on the
         // "wrong" geometry type still falls back — conservative and correct).
         let gpu_layer = gpu && !offscreen && layer.aggregation.is_none() && layer.extrusion.is_none() && !layer.graphics;
+        // Lyon refuses degenerate geometry tiny-skia draws fine: collect_layer reports it,
+        // and the layer runs the CPU branch below like any ineligible one.
+        let mut gpu_done = false;
         if gpu_layer {
             flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
-            mesh::collect_layer(&mut cmds, layer, &geoms, &rows, &visible, ctx.wireframe, ctx.ppp, map_per_px);
-        } else {
+            gpu_done = mesh::collect_layer(&mut cmds, layer, &geoms, &rows, &visible, ctx.wireframe, ctx.ppp, map_per_px).is_ok();
+        }
+        if !gpu_done {
             let dest = if direct { &mut pm } else { &mut target };
             let aggregate = layer.aggregation.filter(|_| layer.geometry_type() == GeometryType::Point);
             let extrude = layer.extrusion.as_ref().filter(|_| layer.geometry_type() == GeometryType::Polygon && globe.is_none());
@@ -908,8 +926,8 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             if let Some(Some(g)) = geoms.get(*row)
                 && rows.get(*row) == Some(&true)
             {
-                if gpu_layer {
-                    mesh::collect_highlight(&mut cmds, g, &layer.symbol(*row), ctx.ppp, map_per_px);
+                if gpu_layer && mesh::collect_highlight(&mut cmds, g, &layer.symbol(*row), ctx.ppp, map_per_px).is_ok() {
+                    // highlight tessellated into the scene, right after its layer
                 } else {
                     ctx.highlight(&mut pm, g, &layer.symbol(*row));
                     cpu_dirty = true;
@@ -1033,11 +1051,20 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
     let tile_errors = tile_out.errors;
     match backend {
         Backend::Cpu => {
-            Some(Rendered2::Cpu(Rendered { pixmap: pm, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors }))
+            Some(RenderOutput::Cpu(Rendered { pixmap: pm, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors }))
         }
         Backend::Gpu => {
             flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
-            Some(Rendered2::Gpu(gpu_scene::GpuScene { cmds, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors }))
+            Some(RenderOutput::Gpu(gpu_scene::GpuScene {
+                clear: mesh::premul(water),
+                cmds,
+                labels,
+                unplaced,
+                attribution,
+                tiles_pending,
+                data_pending,
+                tile_errors,
+            }))
         }
     }
 }
@@ -1724,7 +1751,7 @@ mod tests {
             l.labels.enabled = true;
         }
         let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world() };
-        let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         let kinds = cmd_kinds(&scene);
         assert!(kinds.iter().filter(|k| **k == "mesh").count() >= 2, "countries/lakes/rivers as meshes: {kinds:?}");
         assert!(kinds.contains(&"points"), "cities as marker instances: {kinds:?}");
@@ -1749,7 +1776,7 @@ mod tests {
             l.blend = rustgis_map::effects::Blend::Multiply;
         }
         let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
-        let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         let kinds = cmd_kinds(&scene);
         let last_image = kinds.iter().rposition(|k| *k == "image").expect("the blended layer's cpu image");
         assert!(kinds[..last_image].contains(&"mesh"), "a mesh below the blended layer: {kinds:?}");
@@ -1764,10 +1791,53 @@ mod tests {
             l.selection = vec![0];
         }
         let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
-        let Some(Rendered2::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
         let kinds = cmd_kinds(&scene);
         assert_eq!(kinds.last(), Some(&"mesh"), "the highlight mesh follows the layer: {kinds:?}");
         assert!(kinds.iter().filter(|k| **k == "mesh").count() >= 2, "layer mesh + highlight mesh: {kinds:?}");
+    }
+
+    #[test]
+    fn gpu_scene_carries_backdrop_as_clear_color_and_no_image_for_pure_vectors() {
+        let mut m = sample_world();
+        let view = View { width: 800.0, height: 500.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        assert!(
+            !scene.cmds.iter().any(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })),
+            "a pure-vector scene must carry no CPU image (it would poison the camera fast path): {} cmds",
+            scene.cmds.len()
+        );
+        let (water, ..) = m.basemap.palette();
+        assert_eq!(scene.clear, mesh::premul(water), "the clear colour is the basemap's water");
+    }
+
+    #[test]
+    fn gpu_backend_handles_non_finite_geometry_without_panicking() {
+        // A polygon with a NaN vertex (hostile file): the GPU drops the point (lyon's path
+        // builder panics on NaN — never feed it), the healthy layer still tessellates, and
+        // the frame completes like the CPU's.
+        let build = || {
+            let mut m = Map::new("Map");
+            let mut d = Dataset::new("bad", GeometryType::Polygon, vec![]);
+            d.push(
+                Some(Geometry::Polygon(vec![vec![vec![
+                    Coord::new(0.0, 0.0),
+                    Coord::new(10.0, f64::NAN),
+                    Coord::new(10.0, 10.0),
+                    Coord::new(0.0, 10.0),
+                ]]])),
+                vec![],
+            );
+            m.add_dataset(d);
+            square_layer(&mut m, "good", 30.0, 0.0, 10.0);
+            m
+        };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let mut gm = build();
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut gm, &view, Backend::Gpu) else { panic!("gpu scene") };
+        assert!(cmd_kinds(&scene).contains(&"mesh"), "the healthy layer tessellated");
+        let mut cm = build();
+        assert!(render(&mut cm, &view).is_some(), "cpu frame completes too");
     }
 
     #[test]
@@ -1775,9 +1845,9 @@ mod tests {
         let mut m = sample_world();
         let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
         m.projection = rustgis_map::Projection::Globe;
-        assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(Rendered2::Cpu(_))), "globe stays on the CPU renderer");
+        assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(RenderOutput::Cpu(_))), "globe stays on the CPU renderer");
         m.projection = rustgis_map::Projection::WebMercator;
         m.view.effects.vignette = true;
-        assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(Rendered2::Cpu(_))), "view effects stay on the CPU renderer");
+        assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(RenderOutput::Cpu(_))), "view effects stay on the CPU renderer");
     }
 }

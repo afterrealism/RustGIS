@@ -144,6 +144,6 @@ Mode** switches it by hand.
 **View › Display › GPU Rendering** (beta) draws the flat map on the GPU instead of the CPU:
 vector layers are tessellated once and re-projected per frame, so panning and zooming stay
 smooth on large datasets. It is off by default, and the setting is remembered across sessions
-(`ui.map.gpu` from the command line; `RUSTGIS_GPU=1` forces it on for development). The globe,
+(`ui.map.gpu` is the command; `RUSTGIS_GPU=1` forces it on for development). The globe,
 view effects and the colour-vision simulator always render on the CPU, and exports are
 unaffected — the choice only changes the on-screen flat map.

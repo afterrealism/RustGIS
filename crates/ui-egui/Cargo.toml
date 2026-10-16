@@ -34,4 +34,4 @@ rfd = { workspace = true }
 rustgis-plugins = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 image = { workspace = true }
-pollster = "0.4"
+pollster = { workspace = true }

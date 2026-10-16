@@ -10,6 +10,10 @@ use crate::PlacedLabel;
 /// A finished GPU scene: draw commands in bottom-first order plus the same side channels
 /// (labels, attribution, pending flags) the CPU render returns in [`crate::Rendered`].
 pub struct GpuScene {
+    /// The basemap's water colour (premultiplied): the GPU target's clear colour, so a scene
+    /// without any CPU content is still a complete frame — and pure-vector scenes carry no
+    /// Image command at all (that is what lets the camera-uniform fast path engage).
+    pub clear: [f32; 4],
     pub cmds: Vec<DrawCmd>,
     pub labels: Vec<PlacedLabel>,
     /// Labels that didn't fit, when the map shows unplaced labels (drawn in red).

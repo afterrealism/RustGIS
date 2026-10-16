@@ -20,7 +20,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("assistant", 5),
     ("ui-egui", 6),
 ];
-const UI_ONLY: &[&str] = &["egui", "eframe", "egui_extras", "rfd", "winit", "egui_kittest"];
+const UI_ONLY: &[&str] = &["egui", "eframe", "egui_extras", "egui-wgpu", "egui_kittest", "rfd", "wgpu", "winit"];
 
 fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(|p| p.to_path_buf()).unwrap_or_default()
