@@ -46,6 +46,10 @@ pub enum ParamKind {
     RasterLayer,
     /// Any vector layer (no standalone tables).
     VectorLayer,
+    /// Several raster layers, in order: their names (or file paths) separated by `;`.
+    RasterLayers,
+    /// Several vector layers, in order: their names (or file paths) separated by `;`.
+    VectorLayers,
     /// On or off.
     Bool,
     /// A file path typed by the user (for data RustGIS doesn't open as a layer, such as LiDAR).

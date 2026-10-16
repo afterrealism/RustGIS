@@ -47,7 +47,8 @@ Ocean, Atlas, Blank), which need no network, and web tile layers over them:
 Add one with **Add Tile Layer…** at the bottom of the Basemap gallery, or install the
 [Basemaps plugin](https://plugins.rustgis.app/catalog/basemaps/) for a tab of public basemaps.
 The gallery lists the map's tile layers: show or hide them, change their opacity and order, or
-remove them. Overlays (labels, roads) stay on top of the basemaps; choosing a built-in basemap
+remove them. The Layers pane lists them too, under the map's layers and above the basemap: tick
+one to show or hide it, and right-click it for its opacity, order and **Remove**. Overlays (labels, roads) stay on top of the basemaps; choosing a built-in basemap
 removes the web basemaps but keeps the overlays. Tile layers are saved with the project, and
 their credits are shown in the corner of the map and drawn on exports.
 

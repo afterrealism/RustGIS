@@ -102,6 +102,29 @@ fn manifests_become_tool_forms() {
 }
 
 #[test]
+fn inputs_of_several_layers_are_layer_lists() {
+    // A composite takes several rasters: the form picks layers, not a bare text box (#270).
+    let manifest = json!({"id": "composite", "params": [
+        {"name": "inputs", "io_role": "input", "data_kind": "raster", "schema": {"cardinality": "many"}},
+        {"name": "vectors", "io_role": "input", "data_kind": "vector", "schema": {"cardinality": "many"}},
+        {"name": "files", "io_role": "input", "data_kind": "lidar", "schema": {"cardinality": "many"}},
+        {"name": "dem", "io_role": "input", "data_kind": "raster"},
+        {"name": "output", "io_role": "output", "data_kind": "raster"}
+    ]});
+    let (spec, _) = spec_of(&manifest).unwrap();
+    let kinds: Vec<(&str, ParamKind)> = spec.params.iter().map(|p| (p.name, p.kind)).collect();
+    assert_eq!(
+        kinds,
+        [
+            ("inputs", ParamKind::RasterLayers),
+            ("vectors", ParamKind::VectorLayers),
+            ("files", ParamKind::Text),
+            ("dem", ParamKind::RasterLayer)
+        ]
+    );
+}
+
+#[test]
 fn slope_runs_on_a_raster_layer() {
     let Some(f) = setup() else { return };
     let r = rustgis_analysis::run("geolibre:slope", &f, &json!({"input": "dem", "units": "degrees"})).unwrap();

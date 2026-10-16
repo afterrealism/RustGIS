@@ -223,7 +223,12 @@ fn spec_of(m: &Value) -> Option<(ToolSpec, Meta)> {
             continue;
         }
         let kind = match role {
-            Role::Input if many => ParamKind::Text,
+            // Several layers, picked in order in the form (#270); files typed in go as text.
+            Role::Input if many => match data {
+                Data::Raster => ParamKind::RasterLayers,
+                Data::Vector => ParamKind::VectorLayers,
+                _ => ParamKind::Text,
+            },
             Role::Input => match data {
                 Data::Raster => ParamKind::RasterLayer,
                 Data::Vector => ParamKind::VectorLayer,
