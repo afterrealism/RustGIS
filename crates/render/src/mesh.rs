@@ -15,6 +15,14 @@ use rustgis_map::{Layer, Rgba, Symbol};
 use crate::SELECTION;
 use crate::gpu_scene::{DrawCmd, MeshVertex, PointInstance};
 
+/// Most vertices in one Mesh command: 4 M × 40 B = 160 MB, comfortably under the 256 MiB
+/// default `max_buffer_size`. Giant layers (a whole country's buildings at full zoom-out)
+/// split into ordered chunks that draw identically to one mesh.
+#[cfg(not(test))]
+const MESH_VERTEX_CAP: usize = 4_000_000;
+#[cfg(test)]
+const MESH_VERTEX_CAP: usize = 128;
+
 /// Lyon refused to tessellate something tiny-skia would draw; the caller falls the layer (or
 /// the outline) back to the CPU path. Empty marker for `Result<_, TessError>` so clippy's
 /// `result_unit_err` stays happy.
@@ -140,6 +148,9 @@ fn stroke(
             if pts.len() < min_points {
                 continue;
             }
+            // A closed ring thinned to two points is the CPU's visible dash remnant — stroke
+            // it open (the closed back-and-forth covers the same pixels).
+            let closed = closed && pts.len() > 2;
             let mut b = Path::builder();
             let p0 = rel(pts[0], origin);
             b.begin(lyon::math::point(p0[0], p0[1]));
@@ -172,7 +183,8 @@ pub(crate) fn stroke_rings(
     map_per_px: f64,
 ) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError> {
     let rings: Vec<Vec<Coord>> = polys.iter().flatten().cloned().collect();
-    stroke(&rings, origin, color, width_px, map_per_px, true, 3)
+    // min_points 2: the CPU strokes a ring thinned to two points as a visible dash.
+    stroke(&rings, origin, color, width_px, map_per_px, true, 2)
 }
 
 /// Line features (round caps, round joins, 0.5 px minimum width).
@@ -300,6 +312,12 @@ pub(crate) fn collect_layer(
             continue;
         }
         append_geometry(&mut v, &mut i, &mut pts, g, &layer.symbol(row), origin, wireframe, ppp, map_per_px)?;
+        if v.len() >= MESH_VERTEX_CAP {
+            cmds.push(DrawCmd::Mesh { origin, vertices: std::mem::take(&mut v), indices: std::mem::take(&mut i) });
+        }
+        if pts.len() >= MESH_VERTEX_CAP {
+            cmds.push(DrawCmd::Points { origin, instances: std::mem::take(&mut pts) });
+        }
     }
     if !i.is_empty() {
         cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
@@ -499,6 +517,27 @@ mod tests {
         assert_eq!(three[2].color, premul(Rgba::rgb(255, 0, 0)));
         let one = marker_instances(Coord::new(5.0, 5.0), [5.0, 5.0], &Symbol { stroke_width: 0.0, ..s }, 2.0, None);
         assert_eq!(one.len(), 1, "fill only");
+    }
+
+    #[test]
+    fn collect_layer_chunks_meshes_past_the_vertex_cap() {
+        // cfg(test) caps at 128 vertices: ten outlined squares (≈14 each) exceed it, so the
+        // layer comes out as several ordered Mesh commands, not one.
+        let mut m = rustgis_map::Map::new("Map");
+        let mut d = rustgis_data::Dataset::new("sq", rustgis_data::GeometryType::Polygon, vec![]);
+        for i in 0..10 {
+            let x = i as f64 * 20.0;
+            let ring = vec![Coord::new(x, 0.0), Coord::new(x + 10.0, 0.0), Coord::new(x + 10.0, 10.0), Coord::new(x, 10.0)];
+            d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        }
+        let id = m.add_dataset(d);
+        let layer = m.layer_mut(id).expect("layer");
+        let geoms: Vec<Option<&Geometry>> = layer.dataset.features.iter().map(|f| f.geometry.as_ref()).collect();
+        let rows = vec![true; geoms.len()];
+        let mut cmds = Vec::new();
+        collect_layer(&mut cmds, layer, &geoms, &rows, &|_| true, false, 1.0, 0.0).expect("collect");
+        let meshes = cmds.iter().filter(|c| matches!(c, DrawCmd::Mesh { .. })).count();
+        assert!(meshes > 1, "expected chunked meshes past the cap, got {meshes}");
     }
 
     #[test]

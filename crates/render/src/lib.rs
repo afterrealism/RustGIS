@@ -900,7 +900,9 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         let mut gpu_done = false;
         if gpu_layer {
             flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
-            gpu_done = mesh::collect_layer(&mut cmds, layer, &geoms, &rows, &visible, ctx.wireframe, ctx.ppp, map_per_px).is_ok();
+            // Fills and strokes tessellate from the thinned copy — the same vertices the CPU
+            // draws (`drawn`); selection highlights keep the full `geoms` like the CPU's.
+            gpu_done = mesh::collect_layer(&mut cmds, layer, &drawn, &rows, &visible, ctx.wireframe, ctx.ppp, map_per_px).is_ok();
         }
         if !gpu_done {
             let dest = if direct { &mut pm } else { &mut target };
@@ -1930,6 +1932,46 @@ mod tests {
         assert!(cmd_kinds(&scene).contains(&"mesh"), "the healthy layer tessellated");
         let mut cm = build();
         assert!(render(&mut cm, &view).is_some(), "cpu frame completes too");
+    }
+
+    #[test]
+    fn subpixel_polygons_still_draw_on_gpu() {
+        // A ring thinned below 3 points at this zoom used to vanish entirely on the GPU; the
+        // CPU still strokes its 2-point remnant as a dash. Regression: the layer contributes
+        // triangles (the dashes) again.
+        let build = || {
+            let mut m = Map::new("Map");
+            let mut d = Dataset::new("b", GeometryType::Polygon, vec![]);
+            for i in 0..100 {
+                let x = (i % 10) as f64 * 0.001 - 0.005;
+                let y = (i / 10) as f64 * 0.001;
+                d.push(
+                    Some(Geometry::Polygon(vec![vec![vec![
+                        Coord::new(x, y),
+                        Coord::new(x + 0.0003, y),
+                        Coord::new(x + 0.0003, y + 0.0003),
+                        Coord::new(x, y + 0.0003),
+                    ]]])),
+                    vec![],
+                );
+            }
+            m.add_dataset(d);
+            m
+        };
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let tris = |m: &mut Map| {
+            let Some(RenderOutput::Gpu(scene)) = render_backend(m, &view, Backend::Gpu) else { panic!("gpu scene") };
+            scene
+                .cmds
+                .iter()
+                .map(|c| match c {
+                    gpu_scene::DrawCmd::Mesh { indices, .. } => indices.len() / 3,
+                    _ => 0,
+                })
+                .sum::<usize>()
+        };
+        let mut bare = Map::new("Map");
+        assert!(tris(&mut build()) > tris(&mut bare), "the subpixel buildings must contribute geometry to the GPU scene");
     }
 
     #[test]
