@@ -4,6 +4,7 @@
 pub mod antimeridian;
 pub mod camera;
 pub mod color;
+pub mod cull;
 pub mod design;
 pub mod effects;
 pub mod globe;
@@ -158,6 +159,10 @@ pub struct Layer {
     /// `None` for a level that draws from the full geometry, thinning saving too little there.
     #[serde(skip)]
     thinned: std::sync::Arc<Vec<(i32, Option<std::sync::Arc<Vec<Option<Geometry>>>>)>>,
+    /// The cull index over `projected_extents` (see [`cull`]), built lazily and dropped with
+    /// every reprojection.
+    #[serde(skip)]
+    cull_index: Option<cull::CullIndex>,
     #[serde(skip)]
     projected_rev: u64,
     /// The projection the cache is in.
@@ -203,6 +208,7 @@ impl Layer {
             projected_extents: Default::default(),
             projected_vertices: 0,
             thinned: Default::default(),
+            cull_index: None,
             projected_rev: u64::MAX,
             projected_for: String::new(),
             geometry_rev: 0,
@@ -371,6 +377,7 @@ impl Layer {
             self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
             self.projected = std::sync::Arc::new(projected);
             self.thinned = Default::default();
+            self.cull_index = None;
             self.projected_rev = self.geometry_rev;
             self.projected_for = key.to_string();
         }
@@ -421,6 +428,17 @@ impl Layer {
     /// Each projected geometry's extent, row for row with [`Layer::projected_cache`].
     pub fn projected_extents(&self) -> &[Extent] {
         &self.projected_extents
+    }
+
+    /// The cull index over `projected_extents` (see [`cull`]), built on first use after each
+    /// reprojection; `None` only if the index could not be built, in which case the renderer
+    /// falls back to its linear extent scan.
+    pub fn cull_index_in(&mut self, flat: &projection::Flat, key: &str) -> Option<&cull::CullIndex> {
+        self.projected_in(flat, key);
+        if self.cull_index.is_none() {
+            self.cull_index = Some(cull::CullIndex::build(&self.projected_extents));
+        }
+        self.cull_index.as_ref()
     }
 
     /// The Web Mercator copies from the last [`Layer::projected`] call, without refreshing them:

@@ -5,7 +5,6 @@
 use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
 use rustgis_map::{Camera, Map};
 use rustgis_render::{Backend, RenderOutput, View, render_backend};
-
 /// `n`×`n` grid of ~4-vertex buildings spanning the world — the zoomed-out worst case.
 fn buildings(n: usize) -> Map {
     let mut m = Map::new("bench");
@@ -28,22 +27,18 @@ fn buildings(n: usize) -> Map {
     m
 }
 
-#[test]
-#[ignore]
-fn bench_world_zoom_render() {
-    let mut m = buildings(1000); // 1M buildings; scale to 4000×4000 if the machine is fast
-    let view = View { width: 1280.0, height: 800.0, pixels_per_point: 1.0, camera: Camera::world() };
+fn bench(m: &mut Map, view: &View, label: &str) {
     for backend in [Backend::Cpu, Backend::Gpu] {
         // Warm-up: builds projected + thinned caches.
-        let _ = render_backend(&mut m, &view, backend);
+        let _ = render_backend(m, view, backend);
         let t0 = web_time::Instant::now();
         const FRAMES: usize = 10;
         for _ in 0..FRAMES {
-            let out = render_backend(&mut m, &view, backend);
+            let out = render_backend(m, view, backend);
             debug_assert!(out.is_some());
         }
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
-        let tris = match render_backend(&mut m, &view, backend) {
+        let tris = match render_backend(m, view, backend) {
             Some(RenderOutput::Gpu(scene)) => scene
                 .cmds
                 .iter()
@@ -54,6 +49,18 @@ fn bench_world_zoom_render() {
                 .sum::<usize>(),
             _ => 0,
         };
-        println!("{backend:?}: {ms:.1} ms/frame, gpu triangles: {tris}");
+        println!("{label} {backend:?}: {ms:.1} ms/frame, gpu triangles: {tris}");
     }
+}
+
+#[test]
+#[ignore]
+fn bench_world_zoom_render() {
+    let mut m = buildings(1000); // 1M buildings; scale to 4000×4000 if the machine is fast
+    let view = View { width: 1280.0, height: 800.0, pixels_per_point: 1.0, camera: Camera::world() };
+    bench(&mut m, &view, "world");
+    // Zoomed in on a ~1° window mid-grid — culling wins here; at world zoom everything is
+    // visible, so the prefix is the whole index.
+    let zoomed = View { camera: Camera { center: rustgis_geom::lonlat_to_merc(Coord::new(-170.0, -75.0)), res: 100.0 }, ..view };
+    bench(&mut m, &zoomed, "zoomed");
 }

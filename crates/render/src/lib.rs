@@ -900,8 +900,21 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
         if globe.is_none() {
             layer.thinned_in(&flat, &key, thin_tol); // refresh the projected cache and its thinned copy
         }
+        // A very large layer's per-frame extent scan goes through its sorted-extent cull
+        // index instead (see `rustgis_map::cull`): this view's candidate rows, ascending
+        // (painter's order is row order). `cand_buf` outlives the `&layer` reborrow below.
+        let mut cand_buf: Vec<u32> = Vec::new();
+        let mut culled = false;
+        if globe.is_none()
+            && layer.dataset.features.len() > rustgis_map::cull::CULL_INDEX_ABOVE
+            && let Some(idx) = layer.cull_index_in(&flat, &key)
+        {
+            idx.candidates(&ctx.cull, &mut cand_buf);
+            culled = true;
+        }
         // Everything below only reads the layer: borrow rather than copy its data each frame.
         let layer: &rustgis_map::Layer = layer;
+        let candidates: Option<&[u32]> = culled.then_some(cand_buf.as_slice());
         let (labels, selection, ds_ptr) = (&layer.labels, &layer.selection, &layer.dataset);
         // The globe draws the lon/lat geometry itself; the flat map its Web Mercator copy.
         let geoms: Vec<Option<&Geometry>> = if globe.is_some() {
@@ -928,7 +941,8 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             flush_acc(&mut pm, &mut cmds, &mut cpu_dirty)?;
             // Fills and strokes tessellate from the thinned copy — the same vertices the CPU
             // draws (`drawn`); selection highlights keep the full `geoms` like the CPU's.
-            gpu_done = mesh::collect_layer(&mut cmds, layer, &drawn, &rows, &visible, ctx.wireframe, ctx.ppp, map_per_px).is_ok();
+            gpu_done =
+                mesh::collect_layer(&mut cmds, layer, &drawn, &rows, candidates, &visible, ctx.wireframe, ctx.ppp, map_per_px).is_ok();
         }
         if !gpu_done {
             let dest = if direct { &mut pm } else { &mut target };
@@ -940,10 +954,12 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                 let px_per_m = view.pixels_per_point / map_ground_res(view, &flat);
                 effects::extrude(dest, &ctx, ds_ptr, &geoms, &rows, x, px_per_m, |r| layer.symbol(r));
             } else {
-                for (row, g) in drawn.iter().enumerate() {
-                    let Some(g) = g else { continue };
+                // One row's draw, shared by both iteration arms below; the per-row
+                // `visible(...)` check stays against the padded cull extent, so semantics
+                // are identical whether or not the cull index pre-filtered the rows.
+                let draw_row = |row: usize, g: &Geometry, dest: &mut Pixmap| {
                     if rows.get(row) != Some(&true) || !visible(&extents.get(row).copied().unwrap_or_else(|| g.extent())) {
-                        continue;
+                        return;
                     }
                     // A picture draws in its row's turn, so graphics keep their order. (On the globe
                     // the geometry and `px` are both longitude/latitude, so the corners land right.)
@@ -955,7 +971,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                         if x0.max(x1) >= 0.0 && x0.min(x1) <= pw && y0.max(y1) >= 0.0 && y0.min(y1) <= ph {
                             picture::draw(dest, ds_ptr, row, (x0, y0, x1, y1), if direct { opacity } else { 1.0 });
                         }
-                        continue;
+                        return;
                     }
                     // A sub-pixel line or polygon collapses to one dot at its extent centre
                     // (the GPU path emits the same dot in `mesh::append_geometry`). Points
@@ -967,9 +983,24 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                         && let Some(c) = collapsed_dot(&extents.get(row).copied().unwrap_or_else(|| g.extent()), map_per_px)
                     {
                         ctx.dot(dest, c, &layer.symbol(row).fill);
-                        continue;
+                        return;
                     }
                     ctx.feature(dest, g, &layer.symbol(row));
+                };
+                match candidates {
+                    Some(c) => {
+                        for &r in c {
+                            if let Some(Some(g)) = drawn.get(r as usize) {
+                                draw_row(r as usize, g, dest);
+                            }
+                        }
+                    }
+                    None => {
+                        for (row, g) in drawn.iter().enumerate() {
+                            let Some(g) = g else { continue };
+                            draw_row(row, g, dest);
+                        }
+                    }
                 }
             }
             cpu_dirty = true;

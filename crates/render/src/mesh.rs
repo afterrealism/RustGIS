@@ -304,16 +304,54 @@ fn append_geometry(
     Ok(())
 }
 
+/// Runs `f` for every row that can draw: the render loop's cull-index candidates when it
+/// pre-filtered a large layer (`Some`), or every row otherwise (globe path, small layers).
+/// The per-row `rows`/`visible` checks stay in both arms — the index answers with the
+/// layer's projected extents, while `visible` decides on the geometry's own extent, so
+/// exact cull semantics are preserved either way.
+fn for_each_candidate(
+    geoms: &[Option<&Geometry>],
+    rows: &[bool],
+    candidates: Option<&[u32]>,
+    visible: &dyn Fn(&Extent) -> bool,
+    mut f: impl FnMut(usize, &Geometry) -> Result<(), TessError>,
+) -> Result<(), TessError> {
+    match candidates {
+        Some(c) => {
+            for &r in c {
+                let row = r as usize;
+                let Some(Some(g)) = geoms.get(row) else { continue };
+                if rows.get(row) != Some(&true) || !visible(&g.extent()) {
+                    continue;
+                }
+                f(row, g)?;
+            }
+        }
+        None => {
+            for (row, g) in geoms.iter().enumerate() {
+                let Some(g) = g else { continue };
+                if rows.get(row) != Some(&true) || !visible(&g.extent()) {
+                    continue;
+                }
+                f(row, g)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Collects one GPU-eligible layer into Mesh/Points commands. `geoms`, `rows` and `visible`
 /// are the render loop's own (projected geometries, row filter, extent cull), so the GPU
-/// draws exactly the features the CPU would. `Ok(None)` when nothing visible was collected;
-/// `Err(TessError)` when lyon refused a feature — the caller then draws the whole layer with
-/// tiny-skia instead (nothing is pushed part-way).
+/// draws exactly the features the CPU would. `candidates` is the render loop's cull-index
+/// output for the current view (`None` = iterate all rows). `Ok(None)` when nothing visible
+/// was collected; `Err(TessError)` when lyon refused a feature — the caller then draws the
+/// whole layer with tiny-skia instead (nothing is pushed part-way).
 pub(crate) fn collect_layer(
     cmds: &mut Vec<DrawCmd>,
     layer: &Layer,
     geoms: &[Option<&Geometry>],
     rows: &[bool],
+    candidates: Option<&[u32]>,
     visible: &dyn Fn(&Extent) -> bool,
     wireframe: bool,
     ppp: f32,
@@ -322,23 +360,16 @@ pub(crate) fn collect_layer(
     // Stable origin: the centre of the drawn features' extent. Two passes cost one extra
     // extent fold — the same order of work as the culling pass the CPU render already does.
     let mut ext = Extent::EMPTY;
-    for (row, g) in geoms.iter().enumerate() {
-        let Some(g) = g else { continue };
-        if rows.get(row) != Some(&true) || !visible(&g.extent()) {
-            continue;
-        }
+    for_each_candidate(geoms, rows, candidates, visible, |_, g| {
         ext = ext.union(&g.extent());
-    }
+        Ok(())
+    })?;
     if ext.is_empty() {
         return Ok(None);
     }
     let origin = [ext.center().x, ext.center().y];
     let (mut v, mut i, mut pts) = (Vec::new(), Vec::new(), Vec::new());
-    for (row, g) in geoms.iter().enumerate() {
-        let Some(g) = g else { continue };
-        if rows.get(row) != Some(&true) || !visible(&g.extent()) {
-            continue;
-        }
+    for_each_candidate(geoms, rows, candidates, visible, |row, g| {
         append_geometry(&mut v, &mut i, &mut pts, g, &layer.symbol(row), origin, wireframe, ppp, map_per_px)?;
         if v.len() >= MESH_VERTEX_CAP {
             cmds.push(DrawCmd::Mesh { origin, vertices: std::mem::take(&mut v), indices: std::mem::take(&mut i) });
@@ -346,7 +377,8 @@ pub(crate) fn collect_layer(
         if pts.len() >= MESH_VERTEX_CAP {
             cmds.push(DrawCmd::Points { origin, instances: std::mem::take(&mut pts) });
         }
-    }
+        Ok(())
+    })?;
     if !i.is_empty() {
         cmds.push(DrawCmd::Mesh { origin, vertices: v, indices: i });
     }
@@ -563,7 +595,7 @@ mod tests {
         let geoms: Vec<Option<&Geometry>> = layer.dataset.features.iter().map(|f| f.geometry.as_ref()).collect();
         let rows = vec![true; geoms.len()];
         let mut cmds = Vec::new();
-        collect_layer(&mut cmds, layer, &geoms, &rows, &|_| true, false, 1.0, 0.0).expect("collect");
+        collect_layer(&mut cmds, layer, &geoms, &rows, None, &|_| true, false, 1.0, 0.0).expect("collect");
         let meshes = cmds.iter().filter(|c| matches!(c, DrawCmd::Mesh { .. })).count();
         assert!(meshes > 1, "expected chunked meshes past the cap, got {meshes}");
     }
