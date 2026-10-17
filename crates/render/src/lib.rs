@@ -308,6 +308,18 @@ fn paint(c: Rgba, opacity: f32) -> Paint<'static> {
     p
 }
 
+/// Whole-feature collapse: a feature whose on-screen extent is under `COLLAPSE_PX` in both
+/// axes draws as one dot at its centre — the cartographic polygon-to-point collapse. Both
+/// backends call this with the same `map_per_px`, so they make identical decisions.
+pub(crate) const COLLAPSE_PX: f64 = 1.0;
+
+pub(crate) fn collapsed_dot(e: &Extent, map_per_px: f64) -> Option<Coord> {
+    let w = (e.max_x - e.min_x) / map_per_px.max(f64::MIN_POSITIVE);
+    let h = (e.max_y - e.min_y) / map_per_px.max(f64::MIN_POSITIVE);
+    (w.is_finite() && h.is_finite() && w < COLLAPSE_PX && h < COLLAPSE_PX)
+        .then(|| Coord::new((e.min_x + e.max_x) / 2.0, (e.min_y + e.max_y) / 2.0))
+}
+
 struct Ctx<'a> {
     view: &'a View,
     ppp: f32,
@@ -508,6 +520,20 @@ impl Ctx<'_> {
         let Some(path) = pb.finish() else { return };
         let st = Stroke { width: (w * self.ppp).max(0.5), line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
         pm.stroke_path(&path, p, &st, Transform::identity(), None);
+    }
+
+    /// The whole-feature collapse dot (`collapsed_dot`): one filled circle of `COLLAPSE_PX`
+    /// physical px diameter at the feature's extent centre. The GPU path emits the matching
+    /// circle instance in `mesh::append_geometry` — same centre, radius and paint.
+    fn dot(&self, pm: &mut Pixmap, c: Coord, fill: &Rgba) {
+        let (x, y) = self.px(c);
+        if !x.is_finite() || !y.is_finite() {
+            return; // behind the globe
+        }
+        let mut pb = PathBuilder::new();
+        pb.push_circle(x, y, COLLAPSE_PX as f32 / 2.0 * self.ppp);
+        let Some(path) = pb.finish() else { return };
+        pm.fill_path(&path, &paint(*fill, 1.0), FillRule::Winding, Transform::identity(), None);
     }
 
     fn marker(&self, pm: &mut Pixmap, c: Coord, s: &Symbol, opacity: f32, halo: Option<Rgba>) {
@@ -929,6 +955,18 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                         if x0.max(x1) >= 0.0 && x0.min(x1) <= pw && y0.max(y1) >= 0.0 && y0.min(y1) <= ph {
                             picture::draw(dest, ds_ptr, row, (x0, y0, x1, y1), if direct { opacity } else { 1.0 });
                         }
+                        continue;
+                    }
+                    // A sub-pixel line or polygon collapses to one dot at its extent centre
+                    // (the GPU path emits the same dot in `mesh::append_geometry`). Points
+                    // never collapse; graphics rows draw their own content; the globe has no
+                    // flat `map_per_px` scale, so it keeps full geometry.
+                    if globe.is_none()
+                        && !layer.graphics
+                        && !matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_))
+                        && let Some(c) = collapsed_dot(&extents.get(row).copied().unwrap_or_else(|| g.extent()), map_per_px)
+                    {
+                        ctx.dot(dest, c, &layer.symbol(row).fill);
                         continue;
                     }
                     ctx.feature(dest, g, &layer.symbol(row));
@@ -1937,8 +1975,9 @@ mod tests {
     #[test]
     fn subpixel_polygons_still_draw_on_gpu() {
         // A ring thinned below 3 points at this zoom used to vanish entirely on the GPU; the
-        // CPU still strokes its 2-point remnant as a dash. Regression: the layer contributes
-        // triangles (the dashes) again.
+        // CPU still strokes its 2-point remnant as a dash. Those buildings are now sub-pixel
+        // whole features: they collapse to dots (Task 2), so the layer contributes point
+        // instances instead of dash triangles.
         let build = || {
             let mut m = Map::new("Map");
             let mut d = Dataset::new("b", GeometryType::Polygon, vec![]);
@@ -1959,19 +1998,59 @@ mod tests {
             m
         };
         let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
-        let tris = |m: &mut Map| {
+        let dots = |m: &mut Map| {
             let Some(RenderOutput::Gpu(scene)) = render_backend(m, &view, Backend::Gpu) else { panic!("gpu scene") };
             scene
                 .cmds
                 .iter()
                 .map(|c| match c {
-                    gpu_scene::DrawCmd::Mesh { indices, .. } => indices.len() / 3,
+                    gpu_scene::DrawCmd::Points { instances, .. } => instances.len(),
                     _ => 0,
                 })
                 .sum::<usize>()
         };
         let mut bare = Map::new("Map");
-        assert!(tris(&mut build()) > tris(&mut bare), "the subpixel buildings must contribute geometry to the GPU scene");
+        assert!(dots(&mut build()) > dots(&mut bare), "the subpixel buildings must contribute dots to the GPU scene");
+    }
+
+    #[test]
+    fn subpixel_features_collapse_to_dots_on_both_backends() {
+        // 100 sub-pixel buildings: the GPU scene must contain Points (dots), not Mesh dashes,
+        // and the CPU frame must be non-empty. Both decisions come from `collapsed_dot`.
+        // Blank basemap and no graticule: the scene is the buildings layer's commands alone
+        // (the default Paper backdrop and graticule are meshes of their own — 111 here).
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        m.graticule = false;
+        let mut d = Dataset::new("b", GeometryType::Polygon, vec![]);
+        for i in 0..100 {
+            let x = (i % 10) as f64 * 0.001 - 0.005;
+            let y = (i / 10) as f64 * 0.001;
+            d.push(
+                Some(Geometry::Polygon(vec![vec![vec![
+                    Coord::new(x, y),
+                    Coord::new(x + 0.0003, y),
+                    Coord::new(x + 0.0003, y + 0.0003),
+                    Coord::new(x, y + 0.0003),
+                ]]])),
+                vec![],
+            );
+        }
+        m.add_dataset(d);
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let Some(RenderOutput::Gpu(scene)) = render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
+        let dots: usize = scene
+            .cmds
+            .iter()
+            .map(|c| match c {
+                gpu_scene::DrawCmd::Points { instances, .. } => instances.len(),
+                _ => 0,
+            })
+            .sum();
+        let meshes = scene.cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Mesh { .. })).count();
+        assert_eq!(dots, 100, "every sub-pixel building is one dot");
+        assert_eq!(meshes, 0, "no mesh dashes for collapsed features");
+        assert!(render_backend(&mut m, &view, Backend::Cpu).is_some(), "cpu frame completes");
     }
 
     #[test]

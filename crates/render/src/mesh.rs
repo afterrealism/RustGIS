@@ -256,15 +256,43 @@ fn append_geometry(
         Geometry::Point(c) => pts.extend(marker_instances(*c, origin, s, ppp, None)),
         Geometry::MultiPoint(cs) => cs.iter().for_each(|c| pts.extend(marker_instances(*c, origin, s, ppp, None))),
         Geometry::Line(parts) => {
+            // A sub-pixel line collapses to one dot at its extent centre (`Ctx::dot`).
+            if let Some(c) = crate::collapsed_dot(&g.extent(), map_per_px) {
+                pts.push(PointInstance {
+                    position: rel(c, origin),
+                    color: premul(s.stroke),
+                    radius_px: crate::COLLAPSE_PX as f32 / 2.0 * ppp,
+                    shape: rustgis_map::Marker::Circle as u32,
+                });
+                return Ok(());
+            }
             // A non-finite width (hostile symbol state) would put NaN vertices on the GPU.
             if s.stroke.a() > 0 && (s.stroke_width * ppp).is_finite() {
                 extend_mesh(v, i, stroke_lines(parts, origin, premul(s.stroke), s.stroke_width * ppp, map_per_px))?;
             }
         }
         Geometry::Polygon(polys) if wireframe => {
+            if let Some(c) = crate::collapsed_dot(&g.extent(), map_per_px) {
+                pts.push(PointInstance {
+                    position: rel(c, origin),
+                    color: premul(s.fill),
+                    radius_px: crate::COLLAPSE_PX as f32 / 2.0 * ppp,
+                    shape: rustgis_map::Marker::Circle as u32,
+                });
+                return Ok(());
+            }
             extend_mesh(v, i, stroke_rings(polys, origin, premul(s.stroke.with_alpha(255)), s.stroke_width.max(1.0) * ppp, map_per_px))?;
         }
         Geometry::Polygon(polys) => {
+            if let Some(c) = crate::collapsed_dot(&g.extent(), map_per_px) {
+                pts.push(PointInstance {
+                    position: rel(c, origin),
+                    color: premul(s.fill),
+                    radius_px: crate::COLLAPSE_PX as f32 / 2.0 * ppp,
+                    shape: rustgis_map::Marker::Circle as u32,
+                });
+                return Ok(());
+            }
             if s.fill.a() > 0 {
                 extend_mesh(v, i, fill_polygon(polys, origin, premul(s.fill), map_per_px))?;
             }
