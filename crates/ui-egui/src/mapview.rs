@@ -19,6 +19,14 @@ struct Key {
     size: [usize; 2],
     /// Rendered at reduced resolution while the globe was moving.
     draft: bool,
+    /// The last full render used the interaction LOD bias (a thinned copy, `lod_bias != 1.0`).
+    /// In the key so the settle frame re-renders exact even when a gesture ends without one
+    /// final camera change (hold still, then release; scroll-tail stop; a tween's last frame).
+    /// Trace: mid-gesture the stored and current keys both have `lod_draft: true`, so
+    /// `Key { cam: k.cam, ..key } == k` still holds when only the camera moves and the GPU
+    /// fast path is untouched; on settle the current key has `lod_draft: false` against the
+    /// stored `true`, so `stale && !cam_only` forces one exact full re-render at bias 1.0.
+    lod_draft: bool,
     /// The tile cache's generation (0 for a map without tile layers).
     tiles: u64,
     /// Streamed layers' reads finished so far: a new one draws the map again.
@@ -396,11 +404,13 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     };
     let draft = globe_view && moving && !draped;
     let render_ppp = if draft { (ppp * 0.6).max(0.5) } else { ppp };
+    let interacting = moving && (!globe_view || draped);
     let key = Key {
         rev: app.session.revision,
         cam: ((cam.center.x * 100.0) as i64, (cam.center.y * 100.0) as i64, (cam.res * 1000.0) as i64),
         size: [(w as f32 * ppp).round() as usize, (h as f32 * ppp).round() as usize],
         draft,
+        lod_draft: interacting || app.ws.playing.is_some(),
         tiles: 0,
         sources: rustgis_engine::map::source::generation(),
     };
@@ -424,7 +434,6 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
-    let interacting = moving && (!globe_view || draped);
     if globe_view && moving {
         // Wake up once the motion has settled, for the full-resolution frame.
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
@@ -465,8 +474,9 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         let t0 = web_time::Instant::now();
         let view = View { width: w, height: h, pixels_per_point: render_ppp as f64, camera: cam };
         // Mid-gesture (or playing) frames render from a thinned copy two LOD levels coarser,
-        // like the globe's `draft` frames; the settle frame is exact — the camera changed
-        // during the gesture, so `key` differs and re-renders at 1.0 (bias is not in `Key`).
+        // like the globe's `draft` frames; the settle frame is exact — `lod_draft` in `Key`
+        // flips, so `key` differs and re-renders at 1.0 even when the gesture ends without
+        // one last camera change.
         let lod_bias = if interacting || app.ws.playing.is_some() { 4.0 } else { 1.0 };
         let mut rendered_gpu = false;
         if gpu_ok {
@@ -1864,5 +1874,24 @@ mod tests {
         }
         assert_eq!(mv.fps(1.7), Some(10), "only the new burst counts");
         assert_eq!(mv.fps(2.3), None, "idle (no frame in 500 ms)");
+    }
+
+    #[test]
+    fn lod_draft_forces_exact_render_on_settle() {
+        // The stored key of a biased (mid-gesture) full render.
+        let biased = Key { rev: 1, cam: (0, 0, 1000), size: [800, 600], draft: false, lod_draft: true, tiles: 0, sources: 0 };
+        // `cam_only`, as in `main_view`: the current key with the stored camera equals the
+        // stored key — i.e. only the camera changed.
+        let cam_only = |current: Key, stored: Key| Key { cam: stored.cam, ..current } == stored;
+        // Mid-gesture: the next biased frame moved the camera but is still biased, so
+        // cam_only holds and the GPU fast path (uniform rewrite) stays available.
+        let next_biased = Key { cam: (10, 0, 1000), ..biased };
+        assert!(next_biased != biased && cam_only(next_biased, biased));
+        // Settle WITHOUT a final camera change: the exact frame's key has lod_draft=false,
+        // so it is stale and not cam-only — one exact full re-render at bias 1.0 follows.
+        let settle = Key { lod_draft: false, ..biased };
+        assert!(settle != biased && !cam_only(settle, biased));
+        // An idle frame after the exact render: keys match, nothing re-renders.
+        assert!(cam_only(settle, settle));
     }
 }
