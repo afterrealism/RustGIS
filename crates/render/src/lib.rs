@@ -209,9 +209,16 @@ pub enum RenderOutput {
 /// Renders the map for the screen in the chosen backend. `Backend::Cpu` is exactly
 /// [`render`]; `Backend::Gpu` draws what it can as tessellated meshes and everything else
 /// (basemap, tiles, rasters, masked/blended/transparent layers) as CPU-rasterized images in
-/// the same z-order.
+/// the same z-order. The exact LOD: shorthand for [`render_backend_lod`] with a bias of 1.0.
 pub fn render_backend(map: &mut Map, view: &View, backend: Backend) -> Option<RenderOutput> {
-    render_with_backend(map, view, false, backend)
+    render_backend_lod(map, view, backend, 1.0)
+}
+
+/// [`render_backend`] with an interaction LOD bias: `lod_bias` multiplies the thinning
+/// tolerance, so 4.0 draws from the thinned copy two power-of-two levels coarser (mid-gesture
+/// frames — the settle frame renders at 1.0, exact). Values <= 0 or non-finite clamp to 1.0.
+pub fn render_backend_lod(map: &mut Map, view: &View, backend: Backend, lod_bias: f64) -> Option<RenderOutput> {
+    render_with_backend(map, view, false, backend, lod_bias)
 }
 
 /// Decodes PNG bytes into a pixmap.
@@ -650,7 +657,7 @@ pub fn render(map: &mut Map, view: &View) -> Option<Rendered> {
 }
 
 fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Rendered> {
-    match render_with_backend(map, view, full_res_rasters, Backend::Cpu) {
+    match render_with_backend(map, view, full_res_rasters, Backend::Cpu, 1.0) {
         Some(RenderOutput::Cpu(r)) => Some(r),
         // The Cpu backend never produces RenderOutput::Gpu.
         Some(RenderOutput::Gpu(_)) | None => None,
@@ -673,8 +680,9 @@ fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dirty: &mut bo
 
 /// The shared render body behind [`render`], [`render_backend`] and the export paths.
 /// `full_res_rasters` renders rasters at full resolution (exports); `backend` selects the CPU
-/// pixmap or a GPU scene (see [`Backend`]).
-fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<RenderOutput> {
+/// pixmap or a GPU scene (see [`Backend`]); `lod_bias` scales the thinning tolerance (see
+/// [`render_backend_lod`]).
+fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, lod_bias: f64) -> Option<RenderOutput> {
     let (w, h) = view.pixel_size();
     let mut pm = Pixmap::new(w, h)?;
     // Streamed layers read the view: in the background for the screen, in place for an export
@@ -895,8 +903,10 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             }
         }
         // Drawn from a copy thinned to under a third of a pixel: a detailed layer seen whole
-        // otherwise walks many vertices per pixel on every frame.
-        let thin_tol = view.camera.res / view.pixels_per_point.max(0.01) * rustgis_map::lod::THIN_PX;
+        // otherwise walks many vertices per pixel on every frame. The interaction LOD bias
+        // (see [`render_backend_lod`]) widens the tolerance; junk values clamp to exact.
+        let bias = if lod_bias.is_finite() && lod_bias > 0.0 { lod_bias } else { 1.0 };
+        let thin_tol = view.camera.res / view.pixels_per_point.max(0.01) * rustgis_map::lod::THIN_PX * bias;
         if globe.is_none() {
             layer.thinned_in(&flat, &key, thin_tol); // refresh the projected cache and its thinned copy
         }
@@ -1148,7 +1158,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             // layer) costs more full-screen uploads than a plain CPU rasterization.
             let images = cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })).count();
             if images > 4 {
-                return render_with_backend(map, view, full_res_rasters, Backend::Cpu);
+                return render_with_backend(map, view, full_res_rasters, Backend::Cpu, lod_bias);
             }
             Some(RenderOutput::Gpu(gpu_scene::GpuScene {
                 clear: mesh::premul(water),
@@ -2093,5 +2103,43 @@ mod tests {
         m.projection = rustgis_map::Projection::WebMercator;
         m.view.effects.vignette = true;
         assert!(matches!(render_backend(&mut m, &view, Backend::Gpu), Some(RenderOutput::Cpu(_))), "view effects stay on the CPU renderer");
+    }
+
+    #[test]
+    fn lod_bias_thins_during_interaction() {
+        // A dense sine line: bias 4 renders from a thinned copy two power-of-two levels coarser
+        // than bias 1. Assert via GPU vertex count (deterministic, no timing). The fixture must
+        // clear `lod::THIN_ABOVE` (a smaller layer never thins at all) and span the view densely
+        // enough that the 0.35 px draw-time decimation doesn't squash both biases to the same
+        // count — hence 15 waves of 30° amplitude across 200° of longitude.
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("l", GeometryType::Polyline, vec![]);
+        let n = 262_144usize;
+        let part: Vec<Coord> = (0..n)
+            .map(|i| {
+                let t = i as f64 / n as f64;
+                Coord::new(-100.0 + 200.0 * t, 30.0 * (t * 15.0 * std::f64::consts::TAU).sin())
+            })
+            .collect();
+        d.push(Some(Geometry::Line(vec![part])), vec![]);
+        m.add_dataset(d);
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let mut verts = |bias: f64| match render_backend_lod(&mut m, &view, Backend::Gpu, bias) {
+            Some(RenderOutput::Gpu(scene)) => scene
+                .cmds
+                .iter()
+                .map(|c| match c {
+                    gpu_scene::DrawCmd::Mesh { vertices, .. } => vertices.len(),
+                    _ => 0,
+                })
+                .sum::<usize>(),
+            _ => 0,
+        };
+        let (exact, biased) = (verts(1.0), verts(4.0));
+        assert!(exact > 0 && biased < exact, "biased render draws fewer vertices: {biased} vs {exact}");
+        // Non-finite or non-positive biases clamp to 1.0 (the exact path).
+        assert_eq!(verts(f64::NAN), exact, "NaN bias clamps to 1.0");
+        assert_eq!(verts(0.0), exact, "zero bias clamps to 1.0");
+        assert_eq!(verts(-2.0), exact, "negative bias clamps to 1.0");
     }
 }

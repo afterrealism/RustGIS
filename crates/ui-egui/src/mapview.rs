@@ -464,6 +464,10 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     {
         let t0 = web_time::Instant::now();
         let view = View { width: w, height: h, pixels_per_point: render_ppp as f64, camera: cam };
+        // Mid-gesture (or playing) frames render from a thinned copy two LOD levels coarser,
+        // like the globe's `draft` frames; the settle frame is exact — the camera changed
+        // during the gesture, so `key` differs and re-renders at 1.0 (bias is not in `Key`).
+        let lod_bias = if interacting || app.ws.playing.is_some() { 4.0 } else { 1.0 };
         let mut rendered_gpu = false;
         if gpu_ok {
             if app.map.gpu_renderer.is_none()
@@ -475,7 +479,7 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             // here too: the CPU block below renders the frame instead.
             if let (Some(r), Some(rs)) = (&app.map.gpu_renderer, &app.map.render_state)
                 && let Some(rustgis_engine::render::RenderOutput::Gpu(scene)) =
-                    rustgis_engine::render::render_backend(app.session.map_mut(), &view, rustgis_engine::render::Backend::Gpu)
+                    rustgis_engine::render::render_backend_lod(app.session.map_mut(), &view, rustgis_engine::render::Backend::Gpu, lod_bias)
                 && let Some(bufs) = crate::mapgpu::SceneBuffers::from_scene(&rs.device, &rs.queue, r, &scene, cam, [w, h], render_ppp)
             {
                 app.map.gpu_frame = Some(std::sync::Arc::new(bufs));
@@ -493,12 +497,14 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 rendered_gpu = true;
             }
         }
-        // The CPU path, unchanged — also the fallback when the GPU backend declines a frame
-        // (render_backend's own compatibility guard, or a scene over the device's limits), or
-        // no render state arrived yet.
+        // The CPU path — also the fallback when the GPU backend declines a frame (the
+        // renderer's own compatibility guard, or a scene over the device's limits), or no
+        // render state arrived yet.
         if !rendered_gpu {
             app.map.gpu_frame = None;
-            if let Some(r) = rustgis_engine::render::render(app.session.map_mut(), &view) {
+            if let Some(rustgis_engine::render::RenderOutput::Cpu(r)) =
+                rustgis_engine::render::render_backend_lod(app.session.map_mut(), &view, rustgis_engine::render::Backend::Cpu, lod_bias)
+            {
                 let size = [r.pixmap.width() as usize, r.pixmap.height() as usize];
                 let img = egui::ColorImage::from_rgba_premultiplied(size, r.pixmap.data());
                 match &mut app.map.texture {
