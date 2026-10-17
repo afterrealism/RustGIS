@@ -968,10 +968,15 @@ mod tests {
         d
     }
 
-    /// A layer of one long line along the equator with `n` vertices.
+    /// A layer of one long line along the equator with `n` vertices, with a gentle wiggle so
+    /// shape-aware (area-based) thinning has detail to measure at every level: a perfectly
+    /// straight line thins to its ends at any tolerance, which these caching tests don't mean
+    /// to exercise.
     fn long_line(n: usize) -> Layer {
         let mut d = Dataset::new("line", GeometryType::Polyline, vec![]);
-        let run = (0..n).map(|i| Coord::new(-170.0 + 340.0 * i as f64 / n as f64, 0.0)).collect();
+        let run = (0..n)
+            .map(|i| Coord::new(-170.0 + 340.0 * i as f64 / n as f64, 0.005 * (std::f64::consts::TAU * i as f64 / 40.0).sin()))
+            .collect();
         d.push(Some(Geometry::Line(vec![run])), vec![]);
         Layer::new(1, d)
     }
@@ -1000,7 +1005,7 @@ mod tests {
 
     #[test]
     fn a_level_saving_little_draws_in_full() {
-        // Zoomed in past the vertex spacing, thinning drops nothing: no copy is kept.
+        // Zoomed in past the vertex spacing, thinning drops too little to be worth a copy.
         let flat = projection::Flat::Mercator;
         let mut l = long_line(lod::THIN_ABOVE + 1000);
         l.projected();
