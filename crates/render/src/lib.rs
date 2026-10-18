@@ -315,6 +315,13 @@ fn paint(c: Rgba, opacity: f32) -> Paint<'static> {
     p
 }
 
+/// tiny-skia's `premultiply_u8` (color.rs): `c·a/255`, rounding any fractional bits. The
+/// collapsed-dot fast path (`Ctx::dot`) seeds its src-over write with these bytes.
+fn premul_u8(c: u8, a: u8) -> u8 {
+    let prod = u32::from(c) * u32::from(a) + 128;
+    ((prod + (prod >> 8)) >> 8) as u8
+}
+
 /// Whole-feature collapse: a feature whose on-screen extent is under `COLLAPSE_PX` in both
 /// axes draws as one dot at its centre — the cartographic polygon-to-point collapse. Both
 /// backends call this with the same `map_per_px`, so they make identical decisions.
@@ -532,13 +539,51 @@ impl Ctx<'_> {
     /// The whole-feature collapse dot (`collapsed_dot`): one filled circle of `COLLAPSE_PX`
     /// physical px diameter at the feature's extent centre. The GPU path emits the matching
     /// circle instance in `mesh::append_geometry` — same centre, radius and paint.
+    ///
+    /// A dot whose diameter is at most one physical pixel covers a single pixel: write it
+    /// directly instead of building a circle path and running the scanline filler per dot
+    /// (~0.9 µs → ~0.01 µs; a real city's millions of sub-pixel buildings at world zoom made
+    /// that the frame cost). The write replicates tiny-skia's own premultiplied src-over
+    /// byte-for-byte (its lowp pipeline: `dst = src + (dst·(255−src_a) + 255) >> 8`, with an
+    /// opaque fill strength-reduced to a plain store — verified byte-identical to `fill_rect`
+    /// of the same pixel). A dot fully outside the pixmap draws nothing; one straddling the
+    /// edge owes the edge column/row a sliver of coverage, and larger dots (HiDPI) want AA:
+    /// both keep the antialiased circle.
     fn dot(&self, pm: &mut Pixmap, c: Coord, fill: &Rgba) {
         let (x, y) = self.px(c);
         if !x.is_finite() || !y.is_finite() {
             return; // behind the globe
         }
+        let r = COLLAPSE_PX as f32 / 2.0 * self.ppp;
+        if r * 2.0 <= 1.0 {
+            let (w, h) = (pm.width() as i32, pm.height() as i32);
+            let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+            if ix >= 0 && iy >= 0 && ix < w && iy < h {
+                let i = (iy as usize * w as usize + ix as usize) * 4;
+                let a = fill.a();
+                let data = pm.data_mut();
+                if let Some(px) = data.get_mut(i..i + 4) {
+                    if a == 255 {
+                        px.copy_from_slice(&[fill.r(), fill.g(), fill.b(), 255]);
+                    } else if a > 0 {
+                        let ia = 255u32 - u32::from(a);
+                        let src = [premul_u8(fill.r(), a), premul_u8(fill.g(), a), premul_u8(fill.b(), a), a];
+                        for (dst, s) in px.iter_mut().zip(src) {
+                            *dst = (u32::from(s) + ((ia * u32::from(*dst) + 255) >> 8)) as u8;
+                        }
+                    }
+                }
+                return;
+            }
+            // Fully outside the pixmap the circle draws nothing either way; only an
+            // edge-straddling dot owes the edge column/row a sliver — the circle below.
+            let (wf, hf) = (w as f32, h as f32);
+            if x + r < 0.0 || y + r < 0.0 || x - r >= wf || y - r >= hf {
+                return;
+            }
+        }
         let mut pb = PathBuilder::new();
-        pb.push_circle(x, y, COLLAPSE_PX as f32 / 2.0 * self.ppp);
+        pb.push_circle(x, y, r);
         let Some(path) = pb.finish() else { return };
         pm.fill_path(&path, &paint(*fill, 1.0), FillRule::Winding, Transform::identity(), None);
     }
@@ -2092,6 +2137,62 @@ mod tests {
         assert_eq!(dots, 100, "every sub-pixel building is one dot");
         assert_eq!(meshes, 0, "no mesh dashes for collapsed features");
         assert!(render_backend(&mut m, &view, Backend::Cpu).is_some(), "cpu frame completes");
+    }
+
+    /// The collapsed-dot fast path inks exactly the containing pixel with tiny-skia's own
+    /// premultiplied src-over bytes: an opaque fill stores `[r,g,b,255]`; a translucent fill
+    /// blends over the backdrop per the lowp formula `src + (dst·(255−a) + 255) >> 8`.
+    #[test]
+    fn collapsed_dot_fast_path_writes_exact_pixel() {
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let build = |fill: Option<Rgba>| {
+            let mut m = Map::new("Map");
+            m.basemap = rustgis_map::Basemap::Blank;
+            m.graticule = false;
+            if let Some(fill) = fill {
+                // A 0.002° square at lon/lat (0,0): far sub-pixel at world zoom → one dot.
+                let mut d = Dataset::new("b", GeometryType::Polygon, vec![]);
+                d.push(
+                    Some(Geometry::Polygon(vec![vec![vec![
+                        Coord::new(-0.001, -0.001),
+                        Coord::new(0.001, -0.001),
+                        Coord::new(0.001, 0.001),
+                        Coord::new(-0.001, 0.001),
+                    ]]])),
+                    vec![],
+                );
+                let id = m.add_dataset(d);
+                if let Some(l) = m.layer_mut(id) {
+                    l.renderer = rustgis_map::Renderer::Single(Symbol {
+                        fill,
+                        stroke: Rgba::rgb(0, 0, 0).with_alpha(0),
+                        stroke_width: 0.0,
+                        size: 0.0,
+                        marker: Marker::Circle,
+                    });
+                }
+            }
+            m
+        };
+        let cpu = |mut m: Map| match render_backend(&mut m, &view, Backend::Cpu) {
+            Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
+            _ => panic!("cpu render"),
+        };
+        let empty = cpu(build(None));
+        let opaque = cpu(build(Some(Rgba::rgb(0xC8, 0x50, 0x3C))));
+        let changed: Vec<usize> = (0..400 * 300).filter(|&p| opaque[p * 4..p * 4 + 4] != empty[p * 4..p * 4 + 4]).collect();
+        assert_eq!(changed.len(), 1, "one opaque sub-pixel building inks exactly one pixel");
+        let p = changed[0];
+        assert_eq!(&opaque[p * 4..p * 4 + 4], &[0xC8, 0x50, 0x3C, 255], "opaque dot is a plain store");
+        let translucent = cpu(build(Some(Rgba::rgb(90, 144, 217).with_alpha(170))));
+        let (bg, got) = (&empty[p * 4..p * 4 + 4], &translucent[p * 4..p * 4 + 4]);
+        let ia = 255u32 - 170;
+        let want: Vec<u8> = [premul_u8(90, 170), premul_u8(144, 170), premul_u8(217, 170), 170]
+            .into_iter()
+            .zip(bg)
+            .map(|(s, d)| (u32::from(s) + ((ia * u32::from(*d) + 255) >> 8)) as u8)
+            .collect();
+        assert_eq!(got, want.as_slice(), "translucent dot replicates tiny-skia's lowp src-over");
     }
 
     #[test]
