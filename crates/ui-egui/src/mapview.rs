@@ -231,6 +231,13 @@ fn now(ui: &Ui) -> f64 {
     ui.input(|i| i.time)
 }
 
+/// Diagnostics: `RUSTGIS_FPS=1` logs one stderr line per map frame outcome (fast-path uniform
+/// rewrite / full render with ms and backend / stale frame served by the shifted texture).
+fn fps_log_enabled() -> bool {
+    static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| std::env::var_os("RUSTGIS_FPS").is_some())
+}
+
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     view_tabs(app, ui, &t);
@@ -465,6 +472,9 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     {
         gf.set_camera(&rs.queue, &cam);
         fast_engaged = true;
+        if fps_log_enabled() {
+            eprintln!("frame fast gpu size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
+        }
     }
     let stale = app.map.key != Some(key);
     if stale
@@ -535,11 +545,25 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
         }
         app.map.render_ms = t0.elapsed().as_millis() as u64;
+        if fps_log_enabled() {
+            eprintln!(
+                "frame render {} ms={} bias={lod_bias} size={}x{} res={:.1} images={}",
+                if rendered_gpu { "gpu" } else { "cpu" },
+                app.map.render_ms,
+                key.size[0],
+                key.size[1],
+                cam.res,
+                app.map.gpu_frame.as_ref().is_some_and(|gf| gf.has_images),
+            );
+        }
         if app.map.camera_moved {
             app.session.record_extent();
             app.map.camera_moved = false;
         }
     } else if stale {
+        if fps_log_enabled() {
+            eprintln!("frame shift (stale, no render) size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
+        }
         ui.ctx().request_repaint();
     }
 

@@ -177,6 +177,24 @@ fn main() -> eframe::Result {
         println!("rustgis {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    // Diagnostics: `RUSTGIS_LOG=1` sends log-crate records (wgpu/eframe errors are otherwise
+    // silent) to stderr. Off by default.
+    if std::env::var_os("RUSTGIS_LOG").is_some() {
+        struct Stderr;
+        impl log::Log for Stderr {
+            fn enabled(&self, _: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, r: &log::Record) {
+                eprintln!("[{}] {}: {}", r.level(), r.target(), r.args());
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: Stderr = Stderr;
+        if log::set_logger(&LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Debug);
+        }
+    }
     // What an earlier session left, before this one can write a new log.
     let crashed = crash::take_previous(prefs::dir());
     crash::install(prefs::dir());
