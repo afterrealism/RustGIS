@@ -276,14 +276,23 @@ impl GpuMapRenderer {
 pub(crate) struct SceneTarget {
     msaa_view: wgpu::TextureView,
     resolve_tex: wgpu::Texture,
+    resolve_view: wgpu::TextureView,
     pub resolve_bind: wgpu::BindGroup,
     pub size: [u32; 2],
+}
+
+/// A target of this size fits the device: non-empty and within `max_texture_dimension_2d`.
+/// Over the limit, texture creation raises a wgpu validation error — fatal under eframe —
+/// so the caller declines the frame and the CPU path renders it instead.
+pub(crate) fn size_fits(w: u32, h: u32, max: u32) -> bool {
+    w > 0 && h > 0 && w <= max && h <= max
 }
 
 impl SceneTarget {
     pub(crate) fn new(device: &wgpu::Device, r: &GpuMapRenderer, size: [u32; 2]) -> Option<SceneTarget> {
         let [w, h] = size;
-        if w == 0 || h == 0 {
+        let max = device.limits().max_texture_dimension_2d;
+        if !size_fits(w, h, max) {
             return None;
         }
         let msaa_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -306,18 +315,22 @@ impl SceneTarget {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
+        let resolve_view = resolve_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let resolve_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mapgpu_resolve_bind"),
             layout: &r.image_layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&resolve_tex.create_view(&wgpu::TextureViewDescriptor::default())),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&resolve_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&r.sampler) },
             ],
         });
-        Some(SceneTarget { msaa_view: msaa_tex.create_view(&wgpu::TextureViewDescriptor::default()), resolve_tex, resolve_bind, size })
+        Some(SceneTarget {
+            msaa_view: msaa_tex.create_view(&wgpu::TextureViewDescriptor::default()),
+            resolve_tex,
+            resolve_view,
+            resolve_bind,
+            size,
+        })
     }
 }
 
@@ -328,7 +341,7 @@ fn record_scene(r: &GpuMapRenderer, draws: &[SceneDraw], clear: [f32; 4], tgt: &
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &tgt.msaa_view,
             depth_slice: None,
-            resolve_target: Some(&tgt.resolve_tex.create_view(&wgpu::TextureViewDescriptor::default())),
+            resolve_target: Some(&tgt.resolve_view),
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0] as f64, g: clear[1] as f64, b: clear[2] as f64, a: clear[3] as f64 }),
                 store: wgpu::StoreOp::Discard,
@@ -613,6 +626,18 @@ mod tests {
     use super::*;
     use rustgis_engine::geom::Coord;
     use rustgis_engine::render::gpu_scene::{MeshVertex, PointInstance};
+
+    #[test]
+    fn oversized_targets_are_declined_before_texture_creation() {
+        // Over max_texture_dimension_2d, creating the MSAA/resolve textures would raise a
+        // wgpu validation error (fatal under eframe); size_fits declines them first.
+        assert!(size_fits(1, 1, 8192));
+        assert!(size_fits(8192, 8192, 8192));
+        assert!(!size_fits(0, 100, 8192), "empty never allocates");
+        assert!(!size_fits(100, 0, 8192));
+        assert!(!size_fits(8193, 100, 8192), "over the width limit");
+        assert!(!size_fits(100, 8193, 8192), "over the height limit");
+    }
 
     fn assert_matches_to_screen(cam: Camera, w: f64, h: f64, p: Coord, origin: [f64; 2]) {
         let m = view_proj(&cam, w, h, origin);
