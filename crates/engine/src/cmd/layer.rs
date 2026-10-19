@@ -285,7 +285,17 @@ pub fn add_dataset(s: &mut Session, mut ds: rustgis_data::Dataset) -> u32 {
         i += 1;
         ds.name = format!("{base} ({i})");
     }
+    let n = ds.features.len();
     let id = s.map_mut().add_dataset(ds);
+    // Eager projection for layers under the threshold: moves the projection + cull-index
+    // cost from first-render to load-time, where the user expects a brief pause. Larger
+    // layers stay lazy to avoid blocking the command handler itself.
+    if n <= rustgis_map::cull::EAGER_PROJECT_ABOVE
+        && n > 0
+        && let Some(l) = s.map_mut().layer_mut(id)
+    {
+        l.projected();
+    }
     s.active_layer = Some(id);
     id
 }

@@ -159,10 +159,11 @@ pub struct Layer {
     /// `None` for a level that draws from the full geometry, thinning saving too little there.
     #[serde(skip)]
     thinned: std::sync::Arc<Vec<(i32, Option<std::sync::Arc<Vec<Option<Geometry>>>>)>>,
-    /// The cull index over `projected_extents` (see [`cull`]), built lazily and dropped with
-    /// every reprojection.
+    /// The cull index over `projected_extents` (see [`cull`]), built eagerly during projection
+    /// and dropped with every reprojection. Arc-shared: a `Layer` clone (undo snapshots, the
+    /// render worker's map clone) bumps a reference instead of copying ~12 bytes per feature.
     #[serde(skip)]
-    cull_index: Option<cull::CullIndex>,
+    cull_index: Option<std::sync::Arc<cull::CullIndex>>,
     #[serde(skip)]
     projected_rev: u64,
     /// The projection the cache is in.
@@ -377,7 +378,15 @@ impl Layer {
             self.projected_vertices = projected.iter().flatten().map(lod::thinnable).sum();
             self.projected = std::sync::Arc::new(projected);
             self.thinned = Default::default();
-            self.cull_index = None;
+            // Eager cull-index build: piggybacks on the projection walk that already touched
+            // every extent. The sort is O(n log n) but runs once, not on every frame. The
+            // `>` gate matches the renderer's use exactly (`render` asks for the index only
+            // above CULL_INDEX_ABOVE); smaller layers stay linear-scan.
+            self.cull_index = if self.dataset.features.len() > cull::CULL_INDEX_ABOVE {
+                Some(std::sync::Arc::new(cull::CullIndex::build(&self.projected_extents)))
+            } else {
+                None
+            };
             self.projected_rev = self.geometry_rev;
             self.projected_for = key.to_string();
         }
@@ -430,15 +439,13 @@ impl Layer {
         &self.projected_extents
     }
 
-    /// The cull index over `projected_extents` (see [`cull`]), built on first use after each
-    /// reprojection; `None` only if the index could not be built, in which case the renderer
-    /// falls back to its linear extent scan.
+    /// The cull index over `projected_extents` (see [`cull`]), built eagerly during projection
+    /// for layers above `CULL_INDEX_ABOVE`; `None` for smaller layers (linear scan is faster)
+    /// or before the first projection. The renderer falls back to its linear extent scan when
+    /// this returns `None`.
     pub fn cull_index_in(&mut self, flat: &projection::Flat, key: &str) -> Option<&cull::CullIndex> {
         self.projected_in(flat, key);
-        if self.cull_index.is_none() {
-            self.cull_index = Some(cull::CullIndex::build(&self.projected_extents));
-        }
-        self.cull_index.as_ref()
+        self.cull_index.as_deref()
     }
 
     /// The Web Mercator copies from the last [`Layer::projected`] call, without refreshing them:
@@ -1019,6 +1026,41 @@ mod tests {
         l.touch_geometry();
         l.projected();
         assert_eq!(l.thinned_cache(12_000.0).as_ptr(), l.projected_cache().as_ptr());
+    }
+
+    fn many_points(n: usize) -> Layer {
+        // n separate point features: the cull gate counts features, not vertices.
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![]);
+        for i in 0..n {
+            d.push(Some(Geometry::Point(Coord::new(i as f64 * 1e-6, 0.0))), vec![]);
+        }
+        Layer::new(1, d)
+    }
+
+    #[test]
+    fn a_large_layer_builds_its_cull_index_with_its_projection() {
+        let flat = projection::Flat::Mercator;
+        // Above the renderer's `> CULL_INDEX_ABOVE` gate: the index is built eagerly with
+        // the projection (the first render never pays the sort), and a clone shares it
+        // instead of copying ~12 bytes per feature.
+        let mut big = many_points(cull::CULL_INDEX_ABOVE + 1);
+        assert!(big.cull_index_in(&flat, "mercator").is_some(), "large layer's index is ready with its projection");
+        let copy = big.clone();
+        match (&copy.cull_index, &big.cull_index) {
+            (Some(a), Some(b)) => assert!(std::sync::Arc::ptr_eq(a, b), "a clone shares the index instead of copying it"),
+            _ => panic!("both clones carry the index"),
+        }
+        // At and below the gate (the renderer asks only above it): no index, linear scan.
+        let mut edge = many_points(cull::CULL_INDEX_ABOVE);
+        edge.projected();
+        assert!(edge.cull_index_in(&flat, "mercator").is_none(), "exactly at the gate stays linear-scan");
+        let mut small = many_points(10);
+        small.projected();
+        assert!(small.cull_index_in(&flat, "mercator").is_none(), "small layers never index");
+        // A reprojection drops the index with the projection cache.
+        big.touch_geometry();
+        big.projected();
+        assert!(big.cull_index_in(&flat, "mercator").is_some(), "rebuilt with the next projection");
     }
 
     #[test]

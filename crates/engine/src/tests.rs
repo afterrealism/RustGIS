@@ -642,6 +642,23 @@ fn raster_layers_open_style_identify_and_round_trip() {
     assert!(crate::cmd::share::map_png(&mut s, Some(320.0), Some(200.0), None).is_ok());
 }
 
+/// Adding data warms the layer's projection cache (see `cmd::layer::add_dataset`): the first
+/// pan after a load never pays the projection walk.
+#[test]
+fn adding_data_warms_the_projection_cache() {
+    isolate_plugins();
+    let mut s = Session::new(Project::default());
+    let r = s
+        .run(
+            "layer.addDataText",
+            &json!({"fileName": "warm.geojson", "text": "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[2.35,48.85]},\"properties\":{}}]}"}),
+        )
+        .unwrap();
+    let layer = r["layer"].as_u64().unwrap_or_default() as u32;
+    let l = s.map().layer(layer).unwrap_or_else(|| panic!("the added layer"));
+    assert!(!l.projected_extents().is_empty(), "the projection is warm right after addData");
+}
+
 /// Every command with junk parameters returns Ok or Err, never panics, and leaves a usable session.
 #[test]
 fn hostile_params_never_panic() {

@@ -10,6 +10,11 @@ use rustgis_geom::Extent;
 /// worth it).
 pub const CULL_INDEX_ABOVE: usize = 100_000;
 
+/// Layers with at most this many features are eagerly projected when added (moving the
+/// projection + cull-index cost from first-render to load-time, where the user expects a
+/// brief pause). Larger layers stay lazy to avoid blocking the command handler itself.
+pub const EAGER_PROJECT_ABOVE: usize = 500_000;
+
 /// Rows sorted by their projected extent's min_x, over a shared copy of the layer's extents.
 #[derive(Clone, Debug)]
 pub struct CullIndex {
