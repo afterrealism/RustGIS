@@ -45,15 +45,26 @@ pub fn thin(g: &Geometry, tol: f64) -> Geometry {
     match g {
         Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
         Geometry::Line(parts) => Geometry::Line(parts.iter().map(|p| thin_run(p, tol, false)).collect()),
-        Geometry::Polygon(polys) => {
-            Geometry::Polygon(polys.iter().map(|rings| rings.iter().map(|r| thin_run(r, tol, true)).collect()).collect())
-        }
+        Geometry::Polygon(polys) => Geometry::Polygon(polys.iter().map(|rings| thin_rings(rings, tol)).collect()),
     }
 }
 
-/// The area threshold for a distance tolerance: a vertex whose perpendicular deviation from
-/// its neighbours' chord is under ~`tol` on a ~`tol`-scale segment has triangle area < tol².
-/// One named helper so the mapping can be recalibrated (the plan's risk table: `0.5 * tol * tol`).
+/// A polygon part's rings, thinned — unless a hole escaped. Independent per-ring VW drives
+/// shell and holes toward their 4-vertex floors, and a hole close to its shell can end up
+/// poking through the shell's thinned edges (the even-odd fill then punches a gap outside
+/// the polygon): such a part keeps its exact rings, at the cost of not thinning.
+fn thin_rings(rings: &[Vec<Coord>], tol: f64) -> Vec<Vec<Coord>> {
+    let thinned: Vec<Vec<Coord>> = rings.iter().map(|r| thin_run(r, tol, true)).collect();
+    let Some(shell) = thinned.first() else { return thinned };
+    let escaped = rings.len() > 1 && thinned.iter().skip(1).any(|h| h.iter().any(|c| !point_in_ring(*c, shell)));
+    if escaped { rings.to_vec() } else { thinned }
+}
+
+/// The effective-area threshold for a distance tolerance. Removal compares `twice_area`
+/// against this value, so the rule is "remove while 2·triangle-area < tol²" — a true
+/// triangle area of 0.5·tol², the intended calibration (a vertex deviating under ~`tol` on
+/// a ~`tol`-scale segment). One named helper so recalibration is a one-line change; the
+/// pin test below locks the vertex count it currently buys.
 fn area_tol(tol: f64) -> f64 {
     tol * tol
 }
@@ -73,11 +84,13 @@ fn thin_run(run: &[Coord], tol: f64, closed: bool) -> Vec<Coord> {
 /// every remaining triangle clears `min_area` or the run hits `floor` vertices. Ends are
 /// pinned, and non-finite vertices are pinned: their triangles' areas are NaN, and NaN
 /// comparisons are false, so the heap-pop order alone would not spare them — the explicit
-/// `is_finite` guard in the break condition does (review doc §1.3). O(n log n) via a min-heap
-/// with lazy deletion: a popped entry whose stored bits differ from the vertex's current area
-/// bits is stale (superseded by a re-push), and `removed` covers a re-push whose area came out
-/// unchanged. Rebuilt in original order by filtering on `removed`, so closed rings (first ==
-/// last by value) survive intact.
+/// `is_finite` guard in the break condition does. O(n log n) via a min-heap with lazy
+/// deletion: a popped entry whose stored bits differ from the vertex's current area bits is
+/// stale (superseded by a re-push), and `removed` covers a re-push whose area came out
+/// unchanged. Stale entries are simply skipped rather than re-ordered, so a removal can
+/// occasionally act on a superseded area — acceptable for display, where only the kept
+/// shape matters. Rebuilt in original order by filtering on `removed`, so closed rings
+/// (first == last by value) survive intact.
 fn thin_run_vw(run: &[Coord], min_area: f64, floor: usize) -> Vec<Coord> {
     let n = run.len();
     if n <= floor.max(3) {
@@ -126,6 +139,21 @@ fn thin_run_vw(run: &[Coord], min_area: f64, floor: usize) -> Vec<Coord> {
     run.iter().zip(&removed).filter_map(|(c, r)| (!r).then_some(*c)).collect()
 }
 
+/// Whether `p` is inside the closed ring `ring` (ray casting; boundary counts as inside).
+/// Thinning's hole-containment guard uses this on thinned rings.
+fn point_in_ring(p: Coord, ring: &[Coord]) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    for i in 0..n {
+        let a = ring[i];
+        let b = ring[(i + 1) % n];
+        if (a.y > p.y) != (b.y > p.y) && a.is_finite() && b.is_finite() && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 /// The number of vertices thinning can drop: those of its lines and rings (points are drawn
 /// as they are).
 pub fn thinnable(g: &Geometry) -> usize {
@@ -172,7 +200,7 @@ mod tests {
     #[test]
     fn vw_keeps_a_sharp_corner_greedy_drops_at_the_same_budget() {
         // A sharp corner in a dense collinear run: at the same kept-vertex budget VW keeps the
-        // corner and drops collinear points, the greedy rule the opposite (review doc §1.4).
+        // corner and drops collinear points, the greedy rule the opposite.
         let corner = Coord::new(10.5, 1.0);
         let mut run: Vec<Coord> = (0..=20).map(|i| Coord::new(i as f64, 0.0)).collect();
         run.insert(11, corner);
@@ -276,6 +304,44 @@ mod tests {
         assert_eq!(out.first(), Some(&ring[0]));
         assert_eq!(out.last(), Some(&ring[0]));
         assert_eq!(thinnable(&Geometry::MultiPoint(ring)), 0);
+    }
+
+    #[test]
+    fn a_hole_stays_inside_its_shell_after_thinning() {
+        // A shell circle r=5 with a hole circle r=4.8 (a 0.2 gap), thinned at a coarse
+        // tolerance: independent per-ring VW drives both toward their 4-vertex floors, and
+        // the hole's inscribed quad reaches further along the axes than the shell quad's
+        // edge midpoints (5·cos45° ≈ 3.54 < 4.8) — without a guard the hole pokes out, and
+        // the even-odd fill punches a gap outside the polygon.
+        let ring = |r: f64| {
+            (0..360)
+                .map(|i| {
+                    let a = std::f64::consts::TAU * i as f64 / 360.0;
+                    Coord::new(r * a.cos(), r * a.sin())
+                })
+                .collect::<Vec<_>>()
+        };
+        let close = |mut r: Vec<Coord>| {
+            r.push(r[0]);
+            r
+        };
+        let g = Geometry::Polygon(vec![vec![close(ring(5.0)), close(ring(4.8))]]);
+        let Geometry::Polygon(polys) = thin(&g, 3.0) else { panic!("a polygon") };
+        let (shell, hole) = (&polys[0][0], &polys[0][1]);
+        assert!(hole.len() >= 4 && shell.len() >= 4, "both rings thinned but kept their floors");
+        for c in hole {
+            assert!(point_in_ring(*c, shell), "hole vertex {c:?} escaped the thinned shell");
+        }
+    }
+
+    #[test]
+    fn area_tol_pins_the_kept_vertex_count() {
+        // The calibration pin (see `area_tol`): this curve at this tolerance keeps exactly
+        // this many vertices. If a recalibration changes the number, update it deliberately
+        // — the value is what every thinned copy in the app is tuned around.
+        let run: Vec<Coord> = (0..=200).map(|i| Coord::new(i as f64 * 0.1, (i as f64 * 0.35).sin())).collect();
+        let Geometry::Line(parts) = thin(&Geometry::Line(vec![run]), 1.0) else { panic!("a line") };
+        assert_eq!(parts[0].len(), 24, "area_tol recalibrated: update this pin on purpose");
     }
 
     #[test]
