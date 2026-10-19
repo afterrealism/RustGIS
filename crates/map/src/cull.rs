@@ -34,17 +34,26 @@ pub struct CullIndex {
 }
 
 impl CullIndex {
+    /// The sort key for row `i`: its extent's `min_x`, with anything non-finite (NaN in
+    /// either sign, or an infinity from an empty extent) mapped to `+INFINITY`.
+    /// `total_cmp` alone is not enough: it orders a sign-bit-set NaN *before* `-inf`, which
+    /// would put a NaN key at the front of `min_xs` and make `partition_point` cut the
+    /// candidate list to nothing — every feature silently dropped. As `+INFINITY` a
+    /// non-finite key sorts truly last, past every cutoff, where `intersects` rejects the
+    /// row anyway; and `total_cmp` (not `partial_cmp`) keeps the comparator a total order,
+    /// which `sort_by` may require since Rust 1.81.
+    fn key(extents: &[Extent], i: u32) -> f64 {
+        match extents.get(i as usize).map(|e| e.min_x) {
+            Some(x) if x.is_finite() => x,
+            _ => f64::INFINITY,
+        }
+    }
+
     /// Indexes `extents` (row for row with the layer's features) by ascending min_x.
     pub fn build(extents: &std::sync::Arc<Vec<Extent>>) -> CullIndex {
         let mut order: Vec<u32> = (0..extents.len() as u32).collect();
-        order.sort_by(|&a, &b| {
-            let (x, y) = (extents.get(a as usize).map_or(f64::NAN, |e| e.min_x), extents.get(b as usize).map_or(f64::NAN, |e| e.min_x));
-            // total_cmp, not partial_cmp: a NaN min_x must not make the comparator
-            // non-total (sort_by may panic on one since Rust 1.81). NaN sorts last, past
-            // the candidates cutoff, where `intersects` rejects it anyway.
-            x.total_cmp(&y)
-        });
-        let min_xs = order.iter().map(|&r| extents.get(r as usize).map_or(f64::NAN, |e| e.min_x)).collect();
+        order.sort_by(|&a, &b| Self::key(extents, a).total_cmp(&Self::key(extents, b)));
+        let min_xs = order.iter().map(|&r| Self::key(extents, r)).collect();
         CullIndex { rows: order, min_xs, extents: extents.clone() }
     }
 
@@ -99,5 +108,19 @@ mod tests {
         let mut got = Vec::new();
         idx.candidates(&ext(-1.0, -1.0, 20.0, 2.0), &mut got);
         assert_eq!(got, vec![0, 1, 2], "ascending row order, not min_x order");
+    }
+
+    #[test]
+    fn a_nan_extent_neither_panics_nor_drops_the_finite_rows() {
+        // A NaN min_x (either sign) must sort last, not first: at the front it makes the
+        // partition cutoff zero and silently drops every feature. The NaN row itself never
+        // matches — `intersects` rejects it, exactly as for an empty extent.
+        let nan = Extent { min_x: f64::NAN, min_y: f64::NAN, max_x: f64::NAN, max_y: f64::NAN };
+        let neg_nan = Extent { min_x: -f64::NAN, min_y: -f64::NAN, max_x: -f64::NAN, max_y: -f64::NAN };
+        let extents = std::sync::Arc::new(vec![nan, ext(0.0, 0.0, 1.0, 1.0), neg_nan, ext(5.0, 0.0, 6.0, 1.0)]);
+        let idx = CullIndex::build(&extents);
+        let mut got = Vec::new();
+        idx.candidates(&ext(-1.0, -1.0, 20.0, 2.0), &mut got);
+        assert_eq!(got, vec![1, 3], "the finite rows survive; the NaN rows never match");
     }
 }
