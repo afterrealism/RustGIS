@@ -316,10 +316,48 @@ fn paint(c: Rgba, opacity: f32) -> Paint<'static> {
 }
 
 /// tiny-skia's `premultiply_u8` (color.rs): `c·a/255`, rounding any fractional bits. The
-/// collapsed-dot fast path (`Ctx::dot`) seeds its src-over write with these bytes.
+/// single-pixel fast paths (`ink_pixel`) seed their src-over writes with these bytes.
 fn premul_u8(c: u8, a: u8) -> u8 {
     let prod = u32::from(c) * u32::from(a) + 128;
     ((prod + (prod >> 8)) >> 8) as u8
+}
+
+/// Inks the one pixel containing (x, y) with `c` at alpha `a`, replicating tiny-skia's lowp
+/// src-over byte-for-byte: `dst = src + (dst·(255−a) + 255) >> 8`, strength-reduced to a
+/// plain store when opaque. `false` when the pixel is outside the pixmap — the caller decides
+/// whether an edge-straddling shape owes the sliver to the antialiased path. Shared by the
+/// collapsed-dot and sub-pixel-marker fast paths.
+fn ink_pixel(pm: &mut Pixmap, x: f32, y: f32, c: Rgba, a: u8) -> bool {
+    if a == 0 {
+        return true; // nothing to draw, and not an edge case: fully outside any sliver
+    }
+    let (w, h) = (pm.width() as i32, pm.height() as i32);
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    if ix < 0 || iy < 0 || ix >= w || iy >= h {
+        return false;
+    }
+    let i = (iy as usize * w as usize + ix as usize) * 4;
+    let data = pm.data_mut();
+    if let Some(px) = data.get_mut(i..i + 4) {
+        if a == 255 {
+            px.copy_from_slice(&[c.r(), c.g(), c.b(), 255]);
+        } else {
+            let ia = 255u32 - u32::from(a);
+            let src = [premul_u8(c.r(), a), premul_u8(c.g(), a), premul_u8(c.b(), a), a];
+            for (dst, s) in px.iter_mut().zip(src) {
+                *dst = (u32::from(s) + ((ia * u32::from(*dst) + 255) >> 8)) as u8;
+            }
+        }
+    }
+    true
+}
+
+/// A sub-pixel shape centred at (x, y) with radius `r` entirely clear of the pixmap: the
+/// antialiased fallback would draw nothing, so the caller skips it. Edge-straddlers return
+/// `false` and take the fallback for their sliver of coverage.
+fn dot_is_outside(pm: &Pixmap, x: f32, y: f32, r: f32) -> bool {
+    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    x + r < 0.0 || y + r < 0.0 || x - r >= w || y - r >= h
 }
 
 /// Whole-feature collapse: a feature whose on-screen extent is under `COLLAPSE_PX` in both
@@ -555,32 +593,8 @@ impl Ctx<'_> {
             return; // behind the globe
         }
         let r = COLLAPSE_PX as f32 / 2.0 * self.ppp;
-        if r * 2.0 <= 1.0 {
-            let (w, h) = (pm.width() as i32, pm.height() as i32);
-            let (ix, iy) = (x.floor() as i32, y.floor() as i32);
-            if ix >= 0 && iy >= 0 && ix < w && iy < h {
-                let i = (iy as usize * w as usize + ix as usize) * 4;
-                let a = fill.a();
-                let data = pm.data_mut();
-                if let Some(px) = data.get_mut(i..i + 4) {
-                    if a == 255 {
-                        px.copy_from_slice(&[fill.r(), fill.g(), fill.b(), 255]);
-                    } else if a > 0 {
-                        let ia = 255u32 - u32::from(a);
-                        let src = [premul_u8(fill.r(), a), premul_u8(fill.g(), a), premul_u8(fill.b(), a), a];
-                        for (dst, s) in px.iter_mut().zip(src) {
-                            *dst = (u32::from(s) + ((ia * u32::from(*dst) + 255) >> 8)) as u8;
-                        }
-                    }
-                }
-                return;
-            }
-            // Fully outside the pixmap the circle draws nothing either way; only an
-            // edge-straddling dot owes the edge column/row a sliver — the circle below.
-            let (wf, hf) = (w as f32, h as f32);
-            if x + r < 0.0 || y + r < 0.0 || x - r >= wf || y - r >= hf {
-                return;
-            }
+        if r * 2.0 <= 1.0 && (ink_pixel(pm, x, y, *fill, fill.a()) || dot_is_outside(pm, x, y, r)) {
+            return;
         }
         let mut pb = PathBuilder::new();
         pb.push_circle(x, y, r);
@@ -594,6 +608,24 @@ impl Ctx<'_> {
             return; // behind the globe
         }
         let r = (s.size.max(1.0) * self.ppp) / 2.0;
+        // Sub-pixel marker fast path: at small radii the shape is visually indistinguishable
+        // from a single pixel, and the direct write avoids building a path + running tiny-skia's
+        // scanline filler per marker (~0.9 µs → ~0.01 µs). Same proven technique as `Ctx::dot`.
+        // Circle/Square: direct pixel up to diameter 1.5 px; Triangle/Diamond/Star: up to 1.0 px
+        // (they need AA slightly earlier to look right). Stroke and halo are invisible at these
+        // sizes and skipped.
+        let fast_limit = match s.marker {
+            Marker::Circle | Marker::Square => 1.5,
+            Marker::Triangle | Marker::Diamond | Marker::Star => 1.0,
+        };
+        if r * 2.0 <= fast_limit && halo.is_none() {
+            let fill_a = (s.fill.a() as f32 * opacity).round().clamp(0.0, 255.0) as u8;
+            if ink_pixel(pm, x, y, s.fill, fill_a) || dot_is_outside(pm, x, y, r) {
+                return;
+            }
+            // Edge-straddling: fall through to the antialiased path for the sliver it owes
+            // the edge column/row (rare at sub-pixel sizes).
+        }
         let mut pb = PathBuilder::new();
         match s.marker {
             Marker::Circle => pb.push_circle(x, y, r),
@@ -2193,6 +2225,60 @@ mod tests {
             .map(|(s, d)| (u32::from(s) + ((ia * u32::from(*d) + 255) >> 8)) as u8)
             .collect();
         assert_eq!(got, want.as_slice(), "translucent dot replicates tiny-skia's lowp src-over");
+    }
+
+    #[test]
+    fn subpixel_marker_fast_path_writes_exact_pixel() {
+        // A point feature with a small circle marker at world zoom: the marker's radius is
+        // sub-pixel, so the fast path should write exactly one pixel — same as the collapsed-dot
+        // fast path proven in `collapsed_dot_fast_path_writes_exact_pixel`.
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        m.graticule = false;
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![]);
+        d.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![]);
+        let id = m.add_dataset(d);
+        if let Some(l) = m.layer_mut(id) {
+            l.renderer = rustgis_map::Renderer::Single(Symbol {
+                fill: Rgba::rgb(0xE0, 0x70, 0x20),
+                stroke: Rgba::rgb(0, 0, 0).with_alpha(0),
+                stroke_width: 0.0,
+                size: 3.0, // 3 px symbol → r = 1.5 px at ppp 1.0 → diameter 3.0 > 1.5 → path
+                marker: Marker::Circle,
+            });
+        }
+        let empty = {
+            let mut e = Map::new("E");
+            e.basemap = rustgis_map::Basemap::Blank;
+            e.graticule = false;
+            match render_backend(&mut e, &view, Backend::Cpu) {
+                Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
+                _ => panic!("empty cpu render"),
+            }
+        };
+        // At size 3.0 (diameter 3 px > the 1.5 fast-path limit) the path builder runs and the
+        // antialiased circle covers several pixels — pinning the boundary between the paths.
+        let big = match render_backend(&mut m, &view, Backend::Cpu) {
+            Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
+            _ => panic!("cpu render"),
+        };
+        let big_changed = (0..400 * 300).filter(|&p| big[p * 4..p * 4 + 4] != empty[p * 4..p * 4 + 4]).count();
+        assert!(big_changed > 4, "a 3 px AA circle covers several pixels, not {big_changed}");
+        // Now shrink to sub-pixel: size 1.0 → r = 0.5 → diameter 1.0 ≤ 1.5 → fast path.
+        if let Some(l) = m.layer_mut(id)
+            && let rustgis_map::Renderer::Single(ref mut s) = l.renderer
+        {
+            s.size = 1.0;
+        }
+        let small = match render_backend(&mut m, &view, Backend::Cpu) {
+            Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
+            _ => panic!("small cpu render"),
+        };
+        let changed: Vec<usize> = (0..400 * 300).filter(|&p| small[p * 4..p * 4 + 4] != empty[p * 4..p * 4 + 4]).collect();
+        assert_eq!(changed.len(), 1, "sub-pixel circle marker inks exactly one pixel: {}", changed.len());
+        let p = changed[0];
+        assert_eq!(&small[p * 4..p * 4 + 4], &[0xE0, 0x70, 0x20, 255], "opaque sub-pixel marker is a plain store");
     }
 
     #[test]

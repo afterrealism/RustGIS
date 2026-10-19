@@ -64,3 +64,52 @@ fn bench_world_zoom_render() {
     let zoomed = View { camera: Camera { center: rustgis_geom::lonlat_to_merc(Coord::new(-170.0, -75.0)), res: 100.0 }, ..view };
     bench(&mut m, &zoomed, "zoomed");
 }
+
+/// `n` points spread over the world, one circle-marker layer — the dense point-cloud case the
+/// sub-pixel marker fast path targets (Amsterdam's points layer at world zoom).
+fn points(n: usize) -> Map {
+    use rustgis_map::{Marker, Renderer, Rgba, Symbol};
+    let mut m = Map::new("pts");
+    let mut d = Dataset::new("p", GeometryType::Point, vec![]);
+    let golden = (5f64.sqrt() - 1.0) / 2.0;
+    let (mut x, mut y) = (0.5f64, 0.5f64);
+    for _ in 0..n {
+        let t = golden * std::f64::consts::TAU;
+        (x, y) = ((x + t.cos()) % 1.0, (y + t.sin()) % 1.0);
+        d.push(Some(Geometry::Point(Coord::new(x * 360.0 - 180.0, y * 160.0 - 80.0))), vec![]);
+    }
+    let id = m.add_dataset(d);
+    if let Some(l) = m.layer_mut(id) {
+        l.renderer = Renderer::Single(Symbol {
+            fill: Rgba::rgb(0xE0, 0x70, 0x20),
+            stroke: Rgba::rgb(0, 0, 0).with_alpha(0),
+            stroke_width: 0.0,
+            size: 1.0,
+            marker: Marker::Circle,
+        });
+    }
+    m
+}
+
+fn set_marker_size(m: &mut Map, size: f64) {
+    use rustgis_map::Renderer;
+    let id = m.layers.first().map(|l| l.id).unwrap_or_default();
+    if let Some(l) = m.layer_mut(id)
+        && let Renderer::Single(s) = &mut l.renderer
+    {
+        s.size = size as f32;
+    }
+}
+
+#[test]
+#[ignore]
+fn bench_subpixel_markers() {
+    // 500k points at world zoom: size 6 draws every marker through the path builder, size 1
+    // through the direct-pixel fast path. The gap between the two numbers is the fix's value.
+    let mut m = points(500_000);
+    let view = View { width: 1280.0, height: 800.0, pixels_per_point: 1.0, camera: Camera::world() };
+    set_marker_size(&mut m, 6.0);
+    bench(&mut m, &view, "markers size 6 (path)");
+    set_marker_size(&mut m, 1.0);
+    bench(&mut m, &view, "markers size 1 (fast path)");
+}
