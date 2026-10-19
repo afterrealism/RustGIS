@@ -290,7 +290,7 @@ pub fn add_dataset(s: &mut Session, mut ds: rustgis_data::Dataset) -> u32 {
     // Eager projection for layers under the threshold: moves the projection + cull-index
     // cost from first-render to load-time, where the user expects a brief pause. Larger
     // layers stay lazy to avoid blocking the command handler itself.
-    if n <= rustgis_map::cull::EAGER_PROJECT_ABOVE
+    if n <= rustgis_map::cull::EAGER_PROJECT_UP_TO
         && n > 0
         && let Some(l) = s.map_mut().layer_mut(id)
     {

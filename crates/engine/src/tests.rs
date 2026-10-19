@@ -657,6 +657,14 @@ fn adding_data_warms_the_projection_cache() {
     let layer = r["layer"].as_u64().unwrap_or_default() as u32;
     let l = s.map().layer(layer).unwrap_or_else(|| panic!("the added layer"));
     assert!(!l.projected_extents().is_empty(), "the projection is warm right after addData");
+    // The threshold is an upper bound (`EAGER_PROJECT_UP_TO`, at-most): a layer one feature
+    // over it stays lazy — its warm cost belongs to the first render, not the command.
+    let mut big = rustgis_data::Dataset::new("big", rustgis_data::GeometryType::Point, vec![]);
+    for i in 0..=rustgis_map::cull::EAGER_PROJECT_UP_TO {
+        big.push_next(Some(rustgis_data::Geometry::Point(rustgis_data::Coord::new(i as f64 * 1e-6, 0.0))), vec![]);
+    }
+    let over = crate::cmd::layer::add_dataset(&mut s, big);
+    assert!(s.map().layer(over).is_some_and(|l| l.projected_extents().is_empty()), "one over the cap stays lazy");
 }
 
 /// Every command with junk parameters returns Ok or Err, never panics, and leaves a usable session.

@@ -113,3 +113,38 @@ fn bench_subpixel_markers() {
     set_marker_size(&mut m, 1.0);
     bench(&mut m, &view, "markers size 1 (fast path)");
 }
+
+/// What Add Data's eager warm costs per layer size (`Layer::projected`, which includes the
+/// eager cull-index sort above `CULL_INDEX_ABOVE`): the numbers behind
+/// `EAGER_PROJECT_UP_TO`'s threshold. `push_next` keeps the fixture build linear.
+#[test]
+#[ignore]
+fn bench_eager_warm() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    use rustgis_map::cull::CULL_INDEX_ABOVE;
+    let warm = |label: &str, n: usize, d: Dataset| {
+        let mut m = Map::new("warm");
+        let id = m.add_dataset(d);
+        let t0 = web_time::Instant::now();
+        m.layer_mut(id).map(|l| l.projected());
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        println!("warm {label}: {ms:.1} ms (cull sort: {})", n > CULL_INDEX_ABOVE);
+    };
+    for n in [50_000usize, 100_000, 250_000, 500_000] {
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![]);
+        for i in 0..n {
+            let x = i as f64 * 360.0 / n as f64 - 180.0;
+            d.push_next(Some(Geometry::Point(Coord::new(x, (x * 3.0).sin()))), vec![]);
+        }
+        warm(&format!("{n:>6} points"), n, d);
+    }
+    // The gate counts features, not vertices: many-vertex features are the real worst case.
+    for (n, verts) in [(100_000usize, 50usize), (500_000, 10)] {
+        let mut d = Dataset::new("lines", GeometryType::Polyline, vec![]);
+        for i in 0..n {
+            let run = (0..verts).map(|v| Coord::new(v as f64 * 0.001 - 180.0 + i as f64 * 1e-5, (i % 90) as f64)).collect();
+            d.push_next(Some(Geometry::Line(vec![run])), vec![]);
+        }
+        warm(&format!("{n:>6} lines x{verts}"), n, d);
+    }
+}

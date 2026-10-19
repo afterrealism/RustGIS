@@ -10,10 +10,13 @@ use rustgis_geom::Extent;
 /// worth it).
 pub const CULL_INDEX_ABOVE: usize = 100_000;
 
-/// Layers with at most this many features are eagerly projected when added (moving the
-/// projection + cull-index cost from first-render to load-time, where the user expects a
-/// brief pause). Larger layers stay lazy to avoid blocking the command handler itself.
-pub const EAGER_PROJECT_ABOVE: usize = 500_000;
+/// Layers with **at most** this many features are eagerly projected when added, moving the
+/// projection + cull-index cost from the first pan to load-time where a pause belongs.
+/// Measured one-time cost (release, `lod_bench::bench_eager_warm`): 2–15 ms for point layers
+/// up to the cap; ~120 ms for the many-vertex worst case (500k ten-vertex lines, 5 M
+/// vertices). Layers with more features stay lazy — their warm cost lands in the first
+/// render, which the background settle worker already takes off the UI thread.
+pub const EAGER_PROJECT_UP_TO: usize = 500_000;
 
 /// Rows sorted by their projected extent's min_x, over a shared copy of the layer's extents.
 #[derive(Clone, Debug)]
