@@ -632,8 +632,11 @@ impl Ctx<'_> {
             Marker::Triangle | Marker::Diamond | Marker::Star => 1.0,
         };
         if r * 2.0 <= fast_limit && halo.is_none() {
-            let fill_a = (s.fill.a() as f32 * opacity).round().clamp(0.0, 255.0) as u8;
-            if ink_pixel(pm, x, y, s.fill, fill_a) || dot_is_outside(pm, x, y, r) {
+            // A hollow marker (transparent fill, visible outline) keeps its outline colour —
+            // inking the fill would draw nothing where the AA path drew an outlined dot.
+            let ink = if s.fill.a() > 0 { s.fill } else { s.stroke };
+            let a = (ink.a() as f32 * opacity).round().clamp(0.0, 255.0) as u8;
+            if ink_pixel(pm, x, y, ink, a) || dot_is_outside(pm, x, y, r) {
                 return;
             }
             // Edge-straddling: fall through to the antialiased path for the sliver it owes
@@ -2292,6 +2295,19 @@ mod tests {
         assert_eq!(changed.len(), 1, "sub-pixel circle marker inks exactly one pixel: {}", changed.len());
         let p = changed[0];
         assert_eq!(&small[p * 4..p * 4 + 4], &[0xE0, 0x70, 0x20, 255], "opaque sub-pixel marker is a plain store");
+        // A hollow marker (transparent fill, visible stroke) inks its outline colour — not
+        // nothing, which is what inking the transparent fill would give.
+        if let Some(l) = m.layer_mut(id)
+            && let rustgis_map::Renderer::Single(ref mut s) = l.renderer
+        {
+            s.fill = Rgba::rgb(0, 0, 0).with_alpha(0);
+            s.stroke = Rgba::rgb(0x20, 0x90, 0xD0);
+        }
+        let hollow = match render_backend(&mut m, &view, Backend::Cpu) {
+            Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
+            _ => panic!("hollow cpu render"),
+        };
+        assert!(hollow.chunks_exact(4).any(|px| px == [0x20, 0x90, 0xD0, 255]), "a hollow sub-pixel marker still inks its stroke colour");
     }
 
     /// A collapsed line is styled by its stroke, on both backends: a line layer with a
