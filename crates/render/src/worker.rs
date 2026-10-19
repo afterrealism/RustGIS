@@ -34,6 +34,9 @@ pub struct RenderResult {
     /// The whole frame — pixmap, labels, unplaced labels, attribution, tile errors — so a
     /// worker-delivered frame is indistinguishable from a synchronous one.
     pub rendered: Option<Rendered>,
+    /// The rendered clone, whose warmed caches the UI splices back into its own layers
+    /// (`Map::adopt_caches`) so the next frame doesn't re-pay them.
+    pub map: Map,
 }
 
 /// The outcome of a non-blocking poll.
@@ -97,8 +100,9 @@ fn worker_loop(rx: mpsc::Receiver<RenderRequest>, tx: mpsc::SyncSender<RenderRes
         .unwrap_or(None);
         // Under the UI's one-outstanding-request protocol the result channel is empty here;
         // a failed send would mean the UI stopped polling, and the loop's next recv (or its
-        // disconnect) sorts that out.
-        let _ = tx.try_send(RenderResult { seq: req.seq, rendered });
+        // disconnect) sorts that out. The clone rides along either way: its caches are valid
+        // whatever the frame outcome.
+        let _ = tx.try_send(RenderResult { seq: req.seq, rendered, map: req.map });
     }
 }
 

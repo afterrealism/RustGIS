@@ -148,3 +148,40 @@ fn bench_eager_warm() {
         warm(&format!("{n:>6} lines x{verts}"), n, d);
     }
 }
+
+/// Does rendering a `Map` clone (the worker's settle frame) redo thinned-copy work the
+/// original already paid? A: settle renders on fresh clones (worker behaviour) vs B: settle
+/// renders on the original (UI-thread behaviour). If A stays far above B, the worker's
+/// warmed caches are worth writing back; if they converge, they are not.
+#[test]
+#[ignore]
+fn bench_worker_clone_cache_loss() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    use rustgis_map::lod::THIN_ABOVE;
+    use rustgis_render::{Backend, RenderOutput, render_backend_lod};
+    // 6k lines x 60 vertices = 360k thinnable vertices, past THIN_ABOVE.
+    let mut d = Dataset::new("lines", GeometryType::Polyline, vec![]);
+    for i in 0..6_000 {
+        let run = (0..60).map(|v| Coord::new(v as f64 * 0.01 - 180.0 + i as f64 * 1e-4, ((i + v) % 90) as f64)).collect();
+        d.push_next(Some(Geometry::Line(vec![run])), vec![]);
+    }
+    let mut m = Map::new("loss");
+    m.add_dataset(d);
+    let view = View { width: 1280.0, height: 800.0, pixels_per_point: 1.0, camera: Camera::world() };
+    // Warm the interaction level on the original — the UI map's state mid-gesture.
+    let _ = render_backend_lod(&mut m, &view, Backend::Cpu, 4.0);
+    let cpu = |m: &mut Map, bias: f64| match render_backend_lod(m, &view, Backend::Cpu, bias) {
+        Some(RenderOutput::Cpu(_)) => true,
+        _ => false,
+    };
+    for round in 1..=3 {
+        let t0 = web_time::Instant::now();
+        assert!(cpu(&mut m.clone(), 1.0), "clone settle renders");
+        println!("clone settle {round}: {:.1} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    for round in 1..=3 {
+        let t0 = web_time::Instant::now();
+        assert!(cpu(&mut m, 1.0), "original settle renders");
+        println!("original settle {round}: {:.1} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    }
+}

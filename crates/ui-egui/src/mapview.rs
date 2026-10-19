@@ -502,9 +502,9 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         && let Some(w) = &app.map.render_worker
     {
         // Nothing outstanding: discard a result left over from a request a synchronous render
-        // superseded, and notice a worker that died in the meantime.
+        // superseded — keeping its warmed caches — and notice a worker that died meanwhile.
         match w.poll() {
-            rustgis_engine::render::worker::Poll::Ready(_) => {}
+            rustgis_engine::render::worker::Poll::Ready(r) => app.session.map_mut().adopt_caches(&r.map),
             rustgis_engine::render::worker::Poll::Empty => {}
             rustgis_engine::render::worker::Poll::Dead => app.map.render_worker = None,
         }
@@ -513,6 +513,9 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     if let Some((seq, pkey, pcam)) = app.map.worker_pending {
         let dead = match app.map.render_worker.as_ref().map(|w| w.poll()) {
             Some(rustgis_engine::render::worker::Poll::Ready(r)) => {
+                // Whatever happened to the frame, the clone's caches are valid for the
+                // current geometry — splice them in so nothing re-pays them.
+                app.session.map_mut().adopt_caches(&r.map);
                 if r.seq == seq {
                     if let Some(frame) = r.rendered {
                         let size = [frame.pixmap.width() as usize, frame.pixmap.height() as usize];

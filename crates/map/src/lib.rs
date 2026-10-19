@@ -454,6 +454,36 @@ impl Layer {
         &self.projected
     }
 
+    /// Takes the render caches a clone of this layer built while rendering (the background
+    /// worker renders a `Map` clone; without this, every clone re-pays the projection walk,
+    /// the thinned copies and the cull-index sort — measured ~2× per settle frame in
+    /// `lod_bench::bench_worker_clone_cache_loss`). Shared Arcs swap, nothing is copied; a
+    /// clone whose caches are stale, empty or built for different geometry is ignored.
+    pub fn adopt_caches(&mut self, other: &Layer) {
+        let populated = other.projected_rev == other.geometry_rev
+            && other.projected.len() == other.dataset.features.len()
+            && other.projected.len() == self.dataset.features.len()
+            && other.geometry_rev == self.geometry_rev;
+        if !populated {
+            return;
+        }
+        // Only when the clone holds something this layer lacks: caches at all, or thinned
+        // levels / a cull index beyond ours.
+        let gains = self.projected_rev != self.geometry_rev
+            || other.thinned.iter().any(|(l, g)| g.is_some() && !self.thinned.iter().any(|(s, h)| *s == *l && h.is_some()))
+            || (other.cull_index.is_some() && self.cull_index.is_none());
+        if !gains {
+            return;
+        }
+        self.projected = other.projected.clone();
+        self.projected_extents = other.projected_extents.clone();
+        self.projected_vertices = other.projected_vertices;
+        self.thinned = other.thinned.clone();
+        self.cull_index = other.cull_index.clone();
+        self.projected_rev = other.projected_rev;
+        self.projected_for = other.projected_for.clone();
+    }
+
     /// Drops the projected geometry cache (the feature cache).
     pub fn clear_cache(&mut self) {
         self.projected = Default::default();
@@ -789,6 +819,18 @@ impl Map {
     pub fn layer_mut(&mut self, id: u32) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|l| l.id == id)
     }
+
+    /// Splices in the render caches a clone of this map built while rendering (the background
+    /// worker's settle frame); layers pair by id, and each adopts only matching geometry
+    /// (see [`Layer::adopt_caches`]).
+    pub fn adopt_caches(&mut self, other: &Map) {
+        for l in &mut self.layers {
+            if let Some(c) = other.layers.iter().find(|c| c.id == l.id) {
+                l.adopt_caches(c);
+            }
+        }
+    }
+
     pub fn layer_index(&self, id: u32) -> Option<usize> {
         self.layers.iter().position(|l| l.id == id)
     }
@@ -1035,6 +1077,30 @@ mod tests {
             d.push(Some(Geometry::Point(Coord::new(i as f64 * 1e-6, 0.0))), vec![]);
         }
         Layer::new(1, d)
+    }
+
+    #[test]
+    fn a_clone_built_thinned_copy_is_adopted_by_its_original() {
+        let flat = projection::Flat::Mercator;
+        // One long line past THIN_ABOVE, so thinning engages; the clone renders (building its
+        // level), the original adopts the caches instead of re-paying the VW walk.
+        let mut l = long_line(lod::THIN_ABOVE + 50_000);
+        l.projected();
+        let mut clone = l.clone();
+        let tol = 12_000.0;
+        let built = clone.thinned_in(&flat, "mercator", tol).as_ptr();
+        assert_ne!(built, clone.projected_cache().as_ptr(), "the clone really built a thinned copy");
+        assert_eq!(l.thinned_cache(tol).as_ptr(), l.projected_cache().as_ptr(), "the original lacks that level");
+        l.adopt_caches(&clone);
+        assert_eq!(l.thinned_cache(tol).as_ptr(), built, "adoption splices the clone's level in");
+        // A clone rendered before an edit is ignored — different geometry_rev — and the
+        // original's adopted caches survive the ignored adoption untouched.
+        let mut edited = l.clone();
+        edited.touch_geometry();
+        edited.projected();
+        l.adopt_caches(&edited);
+        assert_ne!(l.projected_cache().as_ptr(), edited.projected_cache().as_ptr(), "a different geometry_rev is ignored");
+        assert_eq!(l.thinned_cache(tol).as_ptr(), built, "the ignored adoption clobbered nothing");
     }
 
     #[test]
