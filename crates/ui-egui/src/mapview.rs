@@ -37,7 +37,7 @@ struct Key {
 /// last texture stretches correctly across the new rect and the exact re-render can wait for
 /// the size to settle (see `MapView::size_settle`).
 fn size_only_change(current: &Key, stored: &Key) -> bool {
-    current != stored
+    *current != *stored
         && current.rev == stored.rev
         && current.cam == stored.cam
         && current.size != stored.size
@@ -45,6 +45,13 @@ fn size_only_change(current: &Key, stored: &Key) -> bool {
         && current.sources == stored.sources
         && current.draft == stored.draft
         && current.lod_draft == stored.lod_draft
+}
+
+/// Whether the debounce timer re-arms for this frame: it does whenever the size changed since
+/// it armed (or nothing is armed yet). That makes the debounce sliding — the exact render
+/// fires 200 ms after the last resize step, never once per 200 ms during a long drag.
+fn size_rearm(armed_for: Option<[usize; 2]>, size: [usize; 2]) -> bool {
+    armed_for.is_none_or(|s| s != size)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -147,10 +154,11 @@ pub struct MapView {
     pub gpu_enabled: bool,
     /// Rolling map-frame timestamps (for the status-bar FPS readout).
     frame_times: std::collections::VecDeque<f64>,
-    /// When a size-only change was first detected: the render is skipped for up to 200 ms so
-    /// the event loop stays responsive (answering WM pings) while the window manager resizes.
-    /// The existing texture-draw code stretches the last frame across the new rect correctly.
-    size_settle: Option<web_time::Instant>,
+    /// When the size-only debounce armed, and for which size: the exact re-render waits for
+    /// 200 ms after the *last* size change, so the event loop stays responsive (answering WM
+    /// pings) while the window manager resizes. The existing texture-draw code stretches the
+    /// last frame across the new rect correctly.
+    size_settle: Option<(web_time::Instant, [usize; 2])>,
     /// Background CPU render worker (desktop only; `None` on wasm). Renders the exact settle
     /// frame off the UI thread so a slow scene never blocks input.
     #[cfg(not(target_arch = "wasm32"))]
@@ -574,16 +582,19 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // (the root cause of the "resize crash": mutter's ping timeout → WM_DELETE_WINDOW).
     let size_only = stale && app.map.key.is_some_and(|k| size_only_change(&key, &k));
     if size_only {
-        let settled = app.map.size_settle.is_some_and(|t| web_time::Instant::now().duration_since(t).as_millis() >= 200);
+        let now = web_time::Instant::now();
+        // A true debounce: the timer re-arms on every size change, so the exact render waits
+        // for 200 ms of quiet however long the resize drags on — not one render per 200 ms.
+        if size_rearm(app.map.size_settle.as_ref().map(|(_, s)| *s), key.size) {
+            app.map.size_settle = Some((now, key.size));
+        }
+        let settled = app.map.size_settle.is_some_and(|(t, _)| now.duration_since(t).as_millis() >= 200);
         if !settled {
-            if app.map.size_settle.is_none() {
-                app.map.size_settle = Some(web_time::Instant::now());
-            }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
             if fps_log_enabled() {
                 eprintln!("frame resize-debounce size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
             }
-            // Skip the render blocks below; the stale texture draws stretched at line ~570.
+            // Skip the render blocks below; the stale texture draws stretched across the rect.
         } else {
             // Settled: clear the timer and let the normal render path produce one exact frame.
             app.map.size_settle = None;
@@ -2100,5 +2111,15 @@ mod tests {
         // A camera move without any size change is also not size-only.
         let moved = Key { cam: (10, 0, 1000), ..base };
         assert!(!size_only_change(&moved, &base), "camera-only is not size-only");
+    }
+
+    #[test]
+    fn the_debounce_rearms_on_every_size_change() {
+        // Sliding debounce: each new size re-arms the timer, so a long resize drag never
+        // reaches the 200 ms settle point until the steps stop coming.
+        assert!(size_rearm(None, [800, 600]), "nothing armed yet: arm");
+        assert!(!size_rearm(Some([800, 600]), [800, 600]), "same size: keep the original arm time");
+        assert!(size_rearm(Some([800, 600]), [801, 600]), "size changed: re-arm");
+        assert!(size_rearm(Some([801, 600]), [801, 601]), "and again: re-arm");
     }
 }
