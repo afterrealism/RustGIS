@@ -66,10 +66,11 @@ impl RenderWorker {
         Some(RenderWorker { tx: req_tx, rx: res_rx, _handle: handle })
     }
 
-    /// Queues a render request. A full channel means the worker is still busy: the request is
-    /// dropped, and the UI keeps the outstanding one (its result stays newer than nothing).
-    pub fn request(&self, req: RenderRequest) {
-        let _ = self.tx.try_send(req);
+    /// Queues a render request; `true` when it was. A full channel means the worker is still
+    /// busy (the caller keeps its outstanding request), and `false` otherwise stops the UI
+    /// arming `worker_pending` for a result that will never come.
+    pub fn request(&self, req: RenderRequest) -> bool {
+        self.tx.try_send(req).is_ok()
     }
 
     /// Non-blocking poll for a completed frame.

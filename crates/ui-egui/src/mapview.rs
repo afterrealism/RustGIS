@@ -54,6 +54,15 @@ fn size_rearm(armed_for: Option<[usize; 2]>, size: [usize; 2]) -> bool {
     armed_for.is_none_or(|s| s != size)
 }
 
+/// Whether a worker request for exactly this key is outstanding: the frame waits for its
+/// result instead of rendering synchronously — which would duplicate the worker's work on
+/// the UI thread (the very blocking the worker exists to avoid) and then drop its result.
+/// A pending request for a different key is stale; a synchronous render supersedes it.
+#[cfg(not(target_arch = "wasm32"))]
+fn awaiting_worker(pending: Option<(u64, Key, Camera)>, key: Key) -> bool {
+    pending.is_some_and(|(_, k, _)| k == key)
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum DragKind {
     Pan,
@@ -150,7 +159,9 @@ pub struct MapView {
     /// The split map's offscreen MSAA target (its own slot — main and split differ in size).
     pub(crate) gpu_target_split: std::sync::Arc<std::sync::Mutex<Option<crate::mapgpu::SceneTarget>>>,
     pub(crate) render_state: Option<egui_wgpu::RenderState>,
-    /// The GPU map backend, for now gated on the RUSTGIS_GPU environment variable.
+    /// The GPU map backend: on when the saved `ui.map.gpu` preference says so, or the
+    /// RUSTGIS_GPU environment variable forces it on (see `lib.rs`); the ribbon, the status
+    /// bar and its command toggle it.
     pub gpu_enabled: bool,
     /// Rolling map-frame timestamps (for the status-bar FPS readout).
     frame_times: std::collections::VecDeque<f64>,
@@ -623,9 +634,17 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         }
     }
     let stale = app.map.key != Some(key);
+    // A worker request for this exact key is outstanding: wait for it. Rendering here too
+    // would duplicate the settle frame on the UI thread — the blocking the worker exists to
+    // avoid — and its result would then be dropped (see the CPU branch below).
+    #[cfg(not(target_arch = "wasm32"))]
+    let awaiting = awaiting_worker(app.map.worker_pending, key);
+    #[cfg(target_arch = "wasm32")]
+    let awaiting = false;
     if stale
         && !fast_engaged
         && !debounce_active
+        && !awaiting
         && (gpu_ok || !interacting || app.map.texture.is_none() || app.map.key.is_some_and(|k| k.rev != key.rev || k.size != key.size))
     {
         let t0 = web_time::Instant::now();
@@ -683,17 +702,22 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 && app.map.texture.is_some();
             #[cfg(target_arch = "wasm32")]
             let use_worker = false;
+            let mut sent_async = false;
             if use_worker && let Some(worker) = &app.map.render_worker {
                 app.map.render_seq += 1;
                 let seq = app.map.render_seq;
-                worker.request(rustgis_engine::render::worker::RenderRequest { seq, map: app.session.map().clone(), view, lod_bias });
-                app.map.worker_pending = Some((seq, key, cam));
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
-                if fps_log_enabled() {
-                    eprintln!("frame async seq={seq} bias={lod_bias} size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
+                if worker.request(rustgis_engine::render::worker::RenderRequest { seq, map: app.session.map().clone(), view, lod_bias }) {
+                    app.map.worker_pending = Some((seq, key, cam));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+                    if fps_log_enabled() {
+                        eprintln!("frame async seq={seq} bias={lod_bias} size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
+                    }
+                    sent_async = true;
                 }
-            } else if let Some(rustgis_engine::render::RenderOutput::Cpu(r)) =
-                rustgis_engine::render::render_backend_lod(app.session.map_mut(), &view, rustgis_engine::render::Backend::Cpu, lod_bias)
+            }
+            if !sent_async
+                && let Some(rustgis_engine::render::RenderOutput::Cpu(r)) =
+                    rustgis_engine::render::render_backend_lod(app.session.map_mut(), &view, rustgis_engine::render::Backend::Cpu, lod_bias)
             {
                 let size = [r.pixmap.width() as usize, r.pixmap.height() as usize];
                 let img = egui::ColorImage::from_rgba_premultiplied(size, r.pixmap.data());
@@ -2124,5 +2148,15 @@ mod tests {
         assert!(!size_rearm(Some([800, 600]), [800, 600]), "same size: keep the original arm time");
         assert!(size_rearm(Some([800, 600]), [801, 600]), "size changed: re-arm");
         assert!(size_rearm(Some([801, 600]), [801, 601]), "and again: re-arm");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn an_outstanding_request_for_the_current_key_waits() {
+        let key = Key { rev: 1, cam: (0, 0, 1000), size: [800, 600], draft: false, lod_draft: false, tiles: 0, sources: 0 };
+        let pending = (7u64, key, Camera::world());
+        assert!(awaiting_worker(Some(pending), key), "the frame waits for its own request");
+        assert!(!awaiting_worker(Some(pending), Key { rev: 2, ..key }), "a request for an older key is superseded");
+        assert!(!awaiting_worker(None, key), "nothing outstanding: render now");
     }
 }
