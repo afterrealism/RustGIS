@@ -133,6 +133,10 @@ pub struct MapView {
     pub gpu_enabled: bool,
     /// Rolling map-frame timestamps (for the status-bar FPS readout).
     frame_times: std::collections::VecDeque<f64>,
+    /// When a size-only change was first detected: the render is skipped for up to 200 ms so
+    /// the event loop stays responsive (answering WM pings) while the window manager resizes.
+    /// The existing texture-draw code stretches the last frame across the new rect correctly.
+    size_settle: Option<web_time::Instant>,
 }
 
 impl Default for MapView {
@@ -174,6 +178,7 @@ impl Default for MapView {
             render_state: None,
             gpu_enabled: std::env::var_os("RUSTGIS_GPU").is_some(),
             frame_times: std::collections::VecDeque::new(),
+            size_settle: None,
         }
     }
 }
@@ -462,8 +467,49 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // makes the branch below do one full re-render.
     let stale = app.map.key != Some(key);
     let cam_only = app.map.key.is_some_and(|k| (Key { cam: k.cam, ..key }) == k);
+    // Size-only change: everything matches except the pixel dimensions. The existing texture
+    // draw stretches the last frame across the new rect correctly, so skip the expensive full
+    // render for up to 200 ms — this keeps the event loop answering WM pings during resize
+    // storms (the root cause of the "resize crash": mutter's ping timeout → WM_DELETE_WINDOW).
+    let size_only = stale
+        && app.map.key.is_some_and(|k| {
+            k.rev == key.rev
+                && k.cam == key.cam
+                && k.size != key.size
+                && k.tiles == key.tiles
+                && k.sources == key.sources
+                && k.draft == key.draft
+                && k.lod_draft == key.lod_draft
+        });
+    if size_only {
+        let settled = app
+            .map
+            .size_settle
+            .is_some_and(|t| web_time::Instant::now().duration_since(t).as_millis() >= 200);
+        if !settled {
+            if app.map.size_settle.is_none() {
+                app.map.size_settle = Some(web_time::Instant::now());
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+            if fps_log_enabled() {
+                eprintln!(
+                    "frame resize-debounce size={}x{} res={:.1}",
+                    key.size[0], key.size[1], cam.res
+                );
+            }
+            // Skip the render blocks below; the stale texture draws stretched at line ~570.
+        } else {
+            // Settled: clear the timer and let the normal render path produce one exact frame.
+            app.map.size_settle = None;
+        }
+    } else {
+        // Any non-size change clears the debounce immediately.
+        app.map.size_settle = None;
+    }
+    let debounce_active = size_only && app.map.size_settle.is_some();
     let mut fast_engaged = false;
     if stale
+        && !debounce_active
         && gpu_ok
         && (interacting || app.ws.playing.is_some())
         && cam_only
@@ -479,6 +525,7 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     let stale = app.map.key != Some(key);
     if stale
         && !fast_engaged
+        && !debounce_active
         && (gpu_ok || !interacting || app.map.texture.is_none() || app.map.key.is_some_and(|k| k.rev != key.rev || k.size != key.size))
     {
         let t0 = web_time::Instant::now();
@@ -1917,5 +1964,31 @@ mod tests {
         assert!(settle != biased && !cam_only(settle, biased));
         // An idle frame after the exact render: keys match, nothing re-renders.
         assert!(cam_only(settle, settle));
+    }
+
+    #[test]
+    fn size_only_detects_pure_resize_not_camera_or_rev_change() {
+        let base = Key { rev: 1, cam: (0, 0, 1000), size: [800, 600], draft: false, lod_draft: false, tiles: 0, sources: 0 };
+        // Pure size change → size_only.
+        let resized = Key { size: [900, 700], ..base };
+        let is_size_only = |current: Key, stored: Key| {
+            current != stored
+                && stored.rev == current.rev
+                && stored.cam == current.cam
+                && stored.size != current.size
+                && stored.tiles == current.tiles
+                && stored.sources == current.sources
+                && stored.draft == current.draft
+                && stored.lod_draft == current.lod_draft
+        };
+        assert!(is_size_only(resized, base), "pure resize is size-only");
+        // Camera change is NOT size-only.
+        let moved = Key { cam: (10, 0, 1000), size: [900, 700], ..base };
+        assert!(!is_size_only(moved, base), "camera + size is not size-only");
+        // Revision change is NOT size-only.
+        let revised = Key { rev: 2, size: [900, 700], ..base };
+        assert!(!is_size_only(revised, base), "rev + size is not size-only");
+        // Same key is not stale at all.
+        assert!(!is_size_only(base, base), "identical keys are not stale");
     }
 }
