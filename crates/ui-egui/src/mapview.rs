@@ -488,6 +488,20 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // labels and the key/camera captured at send time — never the camera at delivery time,
     // which would misplace the texture shift.
     #[cfg(not(target_arch = "wasm32"))]
+    let mut worker_failed = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.map.worker_pending.is_none()
+        && let Some(w) = &app.map.render_worker
+    {
+        // Nothing outstanding: discard a result left over from a request a synchronous render
+        // superseded, and notice a worker that died in the meantime.
+        match w.poll() {
+            rustgis_engine::render::worker::Poll::Ready(_) => {}
+            rustgis_engine::render::worker::Poll::Empty => {}
+            rustgis_engine::render::worker::Poll::Dead => app.map.render_worker = None,
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some((seq, pkey, pcam)) = app.map.worker_pending {
         let dead = match app.map.render_worker.as_ref().map(|w| w.poll()) {
             Some(rustgis_engine::render::worker::Poll::Ready(r)) => {
@@ -513,9 +527,18 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                         if fps_log_enabled() {
                             eprintln!("frame async-applied seq={seq} size={}x{}", pkey.size[0], pkey.size[1]);
                         }
+                    } else {
+                        // The worker declined the frame (degenerate view, or it panicked and
+                        // was caught): render synchronously this frame so the key gets
+                        // stamped, instead of re-requesting the same failed render forever.
+                        worker_failed = true;
                     }
                     app.map.worker_pending = None;
                     ui.ctx().request_repaint();
+                } else {
+                    // A stale result from a superseded request: the pending one is still
+                    // coming, so come back for it.
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
                 }
                 false
             }
@@ -640,6 +663,7 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             #[cfg(not(target_arch = "wasm32"))]
             let use_worker = app.map.render_worker.is_some()
                 && app.map.worker_pending.is_none()
+                && !worker_failed
                 && !interacting
                 && app.ws.playing.is_none()
                 && app.map.texture.is_some();

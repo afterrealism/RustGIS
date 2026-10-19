@@ -85,10 +85,16 @@ fn worker_loop(rx: mpsc::Receiver<RenderRequest>, tx: mpsc::SyncSender<RenderRes
         while let Ok(newer) = rx.try_recv() {
             req = newer;
         }
-        let rendered = match render_backend_lod(&mut req.map, &req.view, Backend::Cpu, req.lod_bias) {
-            Some(RenderOutput::Cpu(r)) => Some(r),
-            _ => None,
-        };
+        // The renderer must never panic, but if it does anyway the worker thread survives
+        // its first bad frame instead of dying silently — the UI just renders that frame
+        // itself (the `rendered: None` result) and keeps asking for the next ones.
+        let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match render_backend_lod(&mut req.map, &req.view, Backend::Cpu, req.lod_bias) {
+                Some(RenderOutput::Cpu(r)) => Some(r),
+                _ => None,
+            }
+        }))
+        .unwrap_or(None);
         // Under the UI's one-outstanding-request protocol the result channel is empty here;
         // a failed send would mean the UI stopped polling, and the loop's next recv (or its
         // disconnect) sorts that out.
