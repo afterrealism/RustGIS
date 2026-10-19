@@ -39,8 +39,9 @@ pub fn tolerance(level: i32) -> f64 {
 /// A copy of `g` thinned by Visvalingam–Whyatt (see [`thin_run_vw`]) at a tolerance of `tol`
 /// projection units: vertices whose removal changes the shape by less than the tolerance's
 /// area scale are dropped. Every line and ring keeps its first and last vertex, and a ring
-/// keeps at least four vertices, so a small polygon still has an area to fill. A point the
-/// projection couldn't show (not finite) is pinned, so the renderer still breaks the line there.
+/// keeps at least four vertices — the closing duplicate included, so three distinct ones:
+/// still a fillable area. A point the projection couldn't show (not finite) is pinned, so
+/// the renderer still breaks the line there.
 pub fn thin(g: &Geometry, tol: f64) -> Geometry {
     match g {
         Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
@@ -86,11 +87,10 @@ fn thin_run(run: &[Coord], tol: f64, closed: bool) -> Vec<Coord> {
 /// comparisons are false, so the heap-pop order alone would not spare them — the explicit
 /// `is_finite` guard in the break condition does. O(n log n) via a min-heap with lazy
 /// deletion: a popped entry whose stored bits differ from the vertex's current area bits is
-/// stale (superseded by a re-push), and `removed` covers a re-push whose area came out
-/// unchanged. Stale entries are simply skipped rather than re-ordered, so a removal can
-/// occasionally act on a superseded area — acceptable for display, where only the kept
-/// shape matters. Rebuilt in original order by filtering on `removed`, so closed rings
-/// (first == last by value) survive intact.
+/// stale (superseded by a re-push) and is skipped, never acted on, and `removed` covers a
+/// re-push whose area came out unchanged — so every removal uses the vertex's live area.
+/// Rebuilt in original order by filtering on `removed`, so closed rings (first == last by
+/// value) survive intact.
 fn thin_run_vw(run: &[Coord], min_area: f64, floor: usize) -> Vec<Coord> {
     let n = run.len();
     if n <= floor.max(3) {

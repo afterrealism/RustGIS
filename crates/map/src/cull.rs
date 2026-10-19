@@ -14,9 +14,14 @@ pub const CULL_INDEX_ABOVE: usize = 100_000;
 /// projection + cull-index cost from the first pan to load-time where a pause belongs.
 /// Measured one-time cost (release, `lod_bench::bench_eager_warm`): 2–15 ms for point layers
 /// up to the cap; ~120 ms for the many-vertex worst case (500k ten-vertex lines, 5 M
-/// vertices). Layers with more features stay lazy — their warm cost lands in the first
-/// render, which the background settle worker already takes off the UI thread.
+/// vertices). On wasm the same work runs on the browser's single main thread, several times
+/// slower — there the cap is a tenth, keeping the worst-case pause imperceptible. Layers
+/// over the cap stay lazy: their warm cost lands in the first render, which the background
+/// settle worker already takes off the UI thread.
+#[cfg(not(target_arch = "wasm32"))]
 pub const EAGER_PROJECT_UP_TO: usize = 500_000;
+#[cfg(target_arch = "wasm32")]
+pub const EAGER_PROJECT_UP_TO: usize = 50_000;
 
 /// Rows sorted by their projected extent's min_x, over a shared copy of the layer's extents.
 #[derive(Clone, Debug)]
@@ -33,10 +38,13 @@ impl CullIndex {
     pub fn build(extents: &std::sync::Arc<Vec<Extent>>) -> CullIndex {
         let mut order: Vec<u32> = (0..extents.len() as u32).collect();
         order.sort_by(|&a, &b| {
-            let (x, y) = (extents[a as usize].min_x, extents[b as usize].min_x);
-            x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+            let (x, y) = (extents.get(a as usize).map_or(f64::NAN, |e| e.min_x), extents.get(b as usize).map_or(f64::NAN, |e| e.min_x));
+            // total_cmp, not partial_cmp: a NaN min_x must not make the comparator
+            // non-total (sort_by may panic on one since Rust 1.81). NaN sorts last, past
+            // the candidates cutoff, where `intersects` rejects it anyway.
+            x.total_cmp(&y)
         });
-        let min_xs = order.iter().map(|&r| extents[r as usize].min_x).collect();
+        let min_xs = order.iter().map(|&r| extents.get(r as usize).map_or(f64::NAN, |e| e.min_x)).collect();
         CullIndex { rows: order, min_xs, extents: extents.clone() }
     }
 
@@ -48,7 +56,8 @@ impl CullIndex {
         // First index whose min_x exceeds e.max_x: everything before it starts left of the
         // view's right edge, everything at or past it fails `min_x <= e.max_x`.
         let hi = self.min_xs.partition_point(|&x| x <= e.max_x);
-        for &r in &self.rows[..hi] {
+        let Some(rows) = self.rows.get(..hi) else { return };
+        for &r in rows {
             if self.extents.get(r as usize).is_some_and(|x| x.intersects(e)) {
                 out.push(r);
             }

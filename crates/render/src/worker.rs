@@ -92,18 +92,31 @@ fn worker_loop(rx: mpsc::Receiver<RenderRequest>, tx: mpsc::SyncSender<RenderRes
         // The renderer must never panic, but if it does anyway the worker thread survives
         // its first bad frame instead of dying silently — the UI just renders that frame
         // itself (the `rendered: None` result) and keeps asking for the next ones.
-        let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut panicked = false;
+        let rendered = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match render_backend_lod(&mut req.map, &req.view, Backend::Cpu, req.lod_bias) {
                 Some(RenderOutput::Cpu(r)) => Some(r),
                 _ => None,
             }
-        }))
-        .unwrap_or(None);
-        // Under the UI's one-outstanding-request protocol the result channel is empty here;
-        // a failed send would mean the UI stopped polling, and the loop's next recv (or its
-        // disconnect) sorts that out. The clone rides along either way: its caches are valid
-        // whatever the frame outcome.
-        let _ = tx.try_send(RenderResult { seq: req.seq, rendered, map: req.map });
+        })) {
+            Ok(r) => r,
+            Err(caught) => {
+                panicked = true;
+                drop(caught);
+                None
+            }
+        };
+        if panicked {
+            // An unwind can stop mid-cache-rebuild; a half-updated map must never be
+            // spliced into the live one by `Map::adopt_caches`, which cannot tell.
+            for l in req.map.layers.iter_mut() {
+                l.clear_cache();
+            }
+        }
+        // Blocking send: the UI polls every frame while a request is outstanding, so a
+        // result sitting in the one-slot channel frees within a frame — nothing is dropped,
+        // and an error here means the UI is gone, which ends the loop via the next recv.
+        let _ = tx.send(RenderResult { seq: req.seq, rendered, map: req.map });
     }
 }
 
