@@ -41,8 +41,8 @@ pub struct RenderResult {
 
 /// The outcome of a non-blocking poll.
 pub enum Poll {
-    /// A finished frame.
-    Ready(RenderResult),
+    /// A finished frame (boxed: it carries the rendered map clone).
+    Ready(Box<RenderResult>),
     /// Nothing yet; the worker is still rendering.
     Empty,
     /// The worker thread is gone (panicked or exited). The caller stops using the worker.
@@ -75,7 +75,7 @@ impl RenderWorker {
     /// Non-blocking poll for a completed frame.
     pub fn poll(&self) -> Poll {
         match self.rx.try_recv() {
-            Ok(r) => Poll::Ready(r),
+            Ok(r) => Poll::Ready(Box::new(r)),
             Err(mpsc::TryRecvError::Empty) => Poll::Empty,
             Err(mpsc::TryRecvError::Disconnected) => Poll::Dead,
         }

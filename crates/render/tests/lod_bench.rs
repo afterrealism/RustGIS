@@ -157,7 +157,6 @@ fn bench_eager_warm() {
 #[ignore]
 fn bench_worker_clone_cache_loss() {
     use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
-    use rustgis_map::lod::THIN_ABOVE;
     use rustgis_render::{Backend, RenderOutput, render_backend_lod};
     // 6k lines x 60 vertices = 360k thinnable vertices, past THIN_ABOVE.
     let mut d = Dataset::new("lines", GeometryType::Polyline, vec![]);
@@ -170,10 +169,7 @@ fn bench_worker_clone_cache_loss() {
     let view = View { width: 1280.0, height: 800.0, pixels_per_point: 1.0, camera: Camera::world() };
     // Warm the interaction level on the original — the UI map's state mid-gesture.
     let _ = render_backend_lod(&mut m, &view, Backend::Cpu, 4.0);
-    let cpu = |m: &mut Map, bias: f64| match render_backend_lod(m, &view, Backend::Cpu, bias) {
-        Some(RenderOutput::Cpu(_)) => true,
-        _ => false,
-    };
+    let cpu = |m: &mut Map, bias: f64| matches!(render_backend_lod(m, &view, Backend::Cpu, bias), Some(RenderOutput::Cpu(_)));
     for round in 1..=3 {
         let t0 = web_time::Instant::now();
         assert!(cpu(&mut m.clone(), 1.0), "clone settle renders");

@@ -2307,7 +2307,7 @@ mod tests {
             Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
             _ => panic!("hollow cpu render"),
         };
-        assert!(hollow.chunks_exact(4).any(|px| px == [0x20, 0x90, 0xD0, 255]), "a hollow sub-pixel marker still inks its stroke colour");
+        assert!(hollow.as_chunks::<4>().0.contains(&[0x20, 0x90, 0xD0, 255]), "a hollow sub-pixel marker still inks its stroke colour");
     }
 
     /// A collapsed line is styled by its stroke, on both backends: a line layer with a
@@ -2353,7 +2353,7 @@ mod tests {
                 Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
                 _ => panic!("cpu render"),
             };
-            let inked = px.chunks_exact(4).any(|p| p == [0xD0, 0x20, 0x20, 255]);
+            let inked = px.as_chunks::<4>().0.contains(&[0xD0, 0x20, 0x20, 255]);
             assert!(inked, "{name}: collapsed {name} inks its stroke colour on the CPU");
             // GPU: the collapsed dot instance carries the same (premultiplied) colour.
             let scene = match render_backend(&mut m, &view, Backend::Gpu) {

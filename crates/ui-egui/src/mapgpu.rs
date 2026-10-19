@@ -275,6 +275,9 @@ impl GpuMapRenderer {
 /// to (the blit source in egui's pass). Recreated when the map view's physical size changes.
 pub(crate) struct SceneTarget {
     msaa_view: wgpu::TextureView,
+    /// Kept for the parity test's `as_image_copy` read-back (a copy source must be the
+    /// texture, not the view); rendering itself goes through `resolve_view`.
+    #[allow(dead_code)]
     resolve_tex: wgpu::Texture,
     resolve_view: wgpu::TextureView,
     pub resolve_bind: wgpu::BindGroup,
