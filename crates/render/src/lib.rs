@@ -19,6 +19,8 @@ mod raster;
 pub mod report;
 mod text;
 mod tiles;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod worker;
 
 pub use rustgis_tiles;
 pub use tiles::spec as tile_spec;

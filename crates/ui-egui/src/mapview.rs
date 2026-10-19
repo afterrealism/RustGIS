@@ -33,6 +33,20 @@ struct Key {
     sources: u64,
 }
 
+/// A pure size change between two keys: everything but the pixel dimensions matches, so the
+/// last texture stretches correctly across the new rect and the exact re-render can wait for
+/// the size to settle (see `MapView::size_settle`).
+fn size_only_change(current: &Key, stored: &Key) -> bool {
+    current != stored
+        && current.rev == stored.rev
+        && current.cam == stored.cam
+        && current.size != stored.size
+        && current.tiles == stored.tiles
+        && current.sources == stored.sources
+        && current.draft == stored.draft
+        && current.lod_draft == stored.lod_draft
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum DragKind {
     Pan,
@@ -137,6 +151,17 @@ pub struct MapView {
     /// the event loop stays responsive (answering WM pings) while the window manager resizes.
     /// The existing texture-draw code stretches the last frame across the new rect correctly.
     size_settle: Option<web_time::Instant>,
+    /// Background CPU render worker (desktop only; `None` on wasm). Renders the exact settle
+    /// frame off the UI thread so a slow scene never blocks input.
+    #[cfg(not(target_arch = "wasm32"))]
+    render_worker: Option<rustgis_engine::render::worker::RenderWorker>,
+    /// The outstanding worker request: its sequence, and the `Key` and camera the frame is
+    /// being rendered for — stamped on delivery, never the camera at delivery time.
+    #[cfg(not(target_arch = "wasm32"))]
+    worker_pending: Option<(u64, Key, Camera)>,
+    /// The next sequence number for render requests to the worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    render_seq: u64,
 }
 
 impl Default for MapView {
@@ -179,6 +204,12 @@ impl Default for MapView {
             gpu_enabled: std::env::var_os("RUSTGIS_GPU").is_some(),
             frame_times: std::collections::VecDeque::new(),
             size_settle: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            render_worker: rustgis_engine::render::worker::RenderWorker::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            worker_pending: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            render_seq: 0,
         }
     }
 }
@@ -453,6 +484,54 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     if globe_view && !moving && app.map.key.is_some_and(|k| k.draft) {
         ui.ctx().request_repaint();
     }
+    // Apply a finished background frame (see the CPU render branch below): the pixmap, its
+    // labels and the key/camera captured at send time — never the camera at delivery time,
+    // which would misplace the texture shift.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((seq, pkey, pcam)) = app.map.worker_pending {
+        let dead = match app.map.render_worker.as_ref().map(|w| w.poll()) {
+            Some(rustgis_engine::render::worker::Poll::Ready(r)) => {
+                if r.seq == seq {
+                    if let Some(frame) = r.rendered {
+                        let size = [frame.pixmap.width() as usize, frame.pixmap.height() as usize];
+                        let img = egui::ColorImage::from_rgba_premultiplied(size, frame.pixmap.data());
+                        match &mut app.map.texture {
+                            Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+                            None => app.map.texture = Some(ui.ctx().load_texture("map", img, egui::TextureOptions::LINEAR)),
+                        }
+                        app.map.labels = frame.labels;
+                        app.map.labels.splice(0..0, frame.unplaced);
+                        app.map.attribution = frame.attribution;
+                        app.map.last_render = time;
+                        for e in frame.tile_errors {
+                            if app.map.tile_errors.insert(e.clone()) {
+                                app.session.notify(e, true);
+                            }
+                        }
+                        app.map.tex_camera = pcam;
+                        app.map.key = Some(pkey);
+                        if fps_log_enabled() {
+                            eprintln!("frame async-applied seq={seq} size={}x{}", pkey.size[0], pkey.size[1]);
+                        }
+                    }
+                    app.map.worker_pending = None;
+                    ui.ctx().request_repaint();
+                }
+                false
+            }
+            // Still rendering: come back for the result.
+            Some(rustgis_engine::render::worker::Poll::Empty) => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+                false
+            }
+            Some(rustgis_engine::render::worker::Poll::Dead) | None => true,
+        };
+        if dead {
+            // The worker thread is gone: stop asking, render on the UI thread from now on.
+            app.map.worker_pending = None;
+            app.map.render_worker = None;
+        }
+    }
     // The GPU backend draws flat, effect-free frames; it re-renders on every change (no
     // texture-shift trick — meshes re-project in the vertex shader).
     let gpu_ok = app.map.gpu_enabled
@@ -467,35 +546,19 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     // makes the branch below do one full re-render.
     let stale = app.map.key != Some(key);
     let cam_only = app.map.key.is_some_and(|k| (Key { cam: k.cam, ..key }) == k);
-    // Size-only change: everything matches except the pixel dimensions. The existing texture
-    // draw stretches the last frame across the new rect correctly, so skip the expensive full
-    // render for up to 200 ms — this keeps the event loop answering WM pings during resize
-    // storms (the root cause of the "resize crash": mutter's ping timeout → WM_DELETE_WINDOW).
-    let size_only = stale
-        && app.map.key.is_some_and(|k| {
-            k.rev == key.rev
-                && k.cam == key.cam
-                && k.size != key.size
-                && k.tiles == key.tiles
-                && k.sources == key.sources
-                && k.draft == key.draft
-                && k.lod_draft == key.lod_draft
-        });
+    // Size-only change (see `size_only_change`): the debounce below skips the expensive full
+    // render for up to 200 ms, keeping the event loop answering WM pings during resize storms
+    // (the root cause of the "resize crash": mutter's ping timeout → WM_DELETE_WINDOW).
+    let size_only = stale && app.map.key.is_some_and(|k| size_only_change(&key, &k));
     if size_only {
-        let settled = app
-            .map
-            .size_settle
-            .is_some_and(|t| web_time::Instant::now().duration_since(t).as_millis() >= 200);
+        let settled = app.map.size_settle.is_some_and(|t| web_time::Instant::now().duration_since(t).as_millis() >= 200);
         if !settled {
             if app.map.size_settle.is_none() {
                 app.map.size_settle = Some(web_time::Instant::now());
             }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
             if fps_log_enabled() {
-                eprintln!(
-                    "frame resize-debounce size={}x{} res={:.1}",
-                    key.size[0], key.size[1], cam.res
-                );
+                eprintln!("frame resize-debounce size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
             }
             // Skip the render blocks below; the stale texture draws stretched at line ~570.
         } else {
@@ -569,7 +632,29 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         // render state arrived yet.
         if !rendered_gpu {
             app.map.gpu_frame = None;
-            if let Some(rustgis_engine::render::RenderOutput::Cpu(r)) =
+            // The exact settle frame renders on the background worker when one is running:
+            // the last texture keeps showing (shifted to the live camera) until the frame
+            // lands in the poll above. Mid-gesture frames, playback and the very first frame
+            // stay on the UI thread — biased frames are cheap, and an empty screen should
+            // not wait on a channel.
+            #[cfg(not(target_arch = "wasm32"))]
+            let use_worker = app.map.render_worker.is_some()
+                && app.map.worker_pending.is_none()
+                && !interacting
+                && app.ws.playing.is_none()
+                && app.map.texture.is_some();
+            #[cfg(target_arch = "wasm32")]
+            let use_worker = false;
+            if use_worker && let Some(worker) = &app.map.render_worker {
+                app.map.render_seq += 1;
+                let seq = app.map.render_seq;
+                worker.request(rustgis_engine::render::worker::RenderRequest { seq, map: app.session.map().clone(), view, lod_bias });
+                app.map.worker_pending = Some((seq, key, cam));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+                if fps_log_enabled() {
+                    eprintln!("frame async seq={seq} bias={lod_bias} size={}x{} res={:.1}", key.size[0], key.size[1], cam.res);
+                }
+            } else if let Some(rustgis_engine::render::RenderOutput::Cpu(r)) =
                 rustgis_engine::render::render_backend_lod(app.session.map_mut(), &view, rustgis_engine::render::Backend::Cpu, lod_bias)
             {
                 let size = [r.pixmap.width() as usize, r.pixmap.height() as usize];
@@ -589,6 +674,12 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 }
                 app.map.tex_camera = cam;
                 app.map.key = Some(key);
+                // Fresher than anything still in flight: drop the pending request so its
+                // older exact frame doesn't land on top of this one.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.map.worker_pending = None;
+                }
             }
         }
         app.map.render_ms = t0.elapsed().as_millis() as u64;
@@ -1969,26 +2060,21 @@ mod tests {
     #[test]
     fn size_only_detects_pure_resize_not_camera_or_rev_change() {
         let base = Key { rev: 1, cam: (0, 0, 1000), size: [800, 600], draft: false, lod_draft: false, tiles: 0, sources: 0 };
-        // Pure size change → size_only.
+        // Pure size change: debounce.
         let resized = Key { size: [900, 700], ..base };
-        let is_size_only = |current: Key, stored: Key| {
-            current != stored
-                && stored.rev == current.rev
-                && stored.cam == current.cam
-                && stored.size != current.size
-                && stored.tiles == current.tiles
-                && stored.sources == current.sources
-                && stored.draft == current.draft
-                && stored.lod_draft == current.lod_draft
-        };
-        assert!(is_size_only(resized, base), "pure resize is size-only");
-        // Camera change is NOT size-only.
-        let moved = Key { cam: (10, 0, 1000), size: [900, 700], ..base };
-        assert!(!is_size_only(moved, base), "camera + size is not size-only");
-        // Revision change is NOT size-only.
-        let revised = Key { rev: 2, size: [900, 700], ..base };
-        assert!(!is_size_only(revised, base), "rev + size is not size-only");
-        // Same key is not stale at all.
-        assert!(!is_size_only(base, base), "identical keys are not stale");
+        assert!(size_only_change(&resized, &base), "pure resize is size-only");
+        // Every other field changing alongside the size defeats the debounce: the frame needs
+        // a real render, not a stretched texture.
+        assert!(!size_only_change(&Key { cam: (10, 0, 1000), ..resized }, &base), "camera change is not size-only");
+        assert!(!size_only_change(&Key { rev: 2, ..resized }, &base), "rev change is not size-only");
+        assert!(!size_only_change(&Key { tiles: 1, ..resized }, &base), "tile arrival is not size-only");
+        assert!(!size_only_change(&Key { sources: 1, ..resized }, &base), "source arrival is not size-only");
+        assert!(!size_only_change(&Key { draft: true, ..resized }, &base), "globe draft is not size-only");
+        assert!(!size_only_change(&Key { lod_draft: true, ..resized }, &base), "LOD draft is not size-only");
+        // Identical keys are not stale at all.
+        assert!(!size_only_change(&base, &base), "identical keys are not a change");
+        // A camera move without any size change is also not size-only.
+        let moved = Key { cam: (10, 0, 1000), ..base };
+        assert!(!size_only_change(&moved, &base), "camera-only is not size-only");
     }
 }
