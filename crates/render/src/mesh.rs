@@ -260,7 +260,7 @@ fn append_geometry(
             if let Some(c) = crate::collapsed_dot(&g.extent(), map_per_px) {
                 pts.push(PointInstance {
                     position: rel(c, origin),
-                    color: premul(s.stroke),
+                    color: premul(crate::collapse_ink(g, s)),
                     radius_px: crate::COLLAPSE_PX as f32 / 2.0 * ppp,
                     shape: rustgis_map::Marker::Circle as u32,
                 });
@@ -275,7 +275,7 @@ fn append_geometry(
             if let Some(c) = crate::collapsed_dot(&g.extent(), map_per_px) {
                 pts.push(PointInstance {
                     position: rel(c, origin),
-                    color: premul(s.fill),
+                    color: premul(crate::collapse_ink(g, s)),
                     radius_px: crate::COLLAPSE_PX as f32 / 2.0 * ppp,
                     shape: rustgis_map::Marker::Circle as u32,
                 });
@@ -287,7 +287,7 @@ fn append_geometry(
             if let Some(c) = crate::collapsed_dot(&g.extent(), map_per_px) {
                 pts.push(PointInstance {
                     position: rel(c, origin),
-                    color: premul(s.fill),
+                    color: premul(crate::collapse_ink(g, s)),
                     radius_px: crate::COLLAPSE_PX as f32 / 2.0 * ppp,
                     shape: rustgis_map::Marker::Circle as u32,
                 });

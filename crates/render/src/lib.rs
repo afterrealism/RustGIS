@@ -374,6 +374,17 @@ pub(crate) fn collapsed_dot(e: &Extent, map_per_px: f64) -> Option<Coord> {
         .then(|| Coord::new((e.min_x + e.max_x) / 2.0, (e.min_y + e.max_y) / 2.0))
 }
 
+/// The colour a collapsed feature's dot inks with: lines are styled by their stroke, and a
+/// polygon with a transparent fill (an outline-only shape) keeps its outline colour. Both
+/// backends share this rule, so a collapsed feature is the same dot either way.
+pub(crate) fn collapse_ink(g: &Geometry, s: &rustgis_map::Symbol) -> Rgba {
+    match g {
+        Geometry::Line(_) => s.stroke,
+        _ if s.fill.a() > 0 => s.fill,
+        _ => s.stroke,
+    }
+}
+
 struct Ctx<'a> {
     view: &'a View,
     ppp: f32,
@@ -1071,7 +1082,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
                         && !matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_))
                         && let Some(c) = collapsed_dot(&extents.get(row).copied().unwrap_or_else(|| g.extent()), map_per_px)
                     {
-                        ctx.dot(dest, c, &layer.symbol(row).fill);
+                        ctx.dot(dest, c, &collapse_ink(g, &layer.symbol(row)));
                         return;
                     }
                     ctx.feature(dest, g, &layer.symbol(row));
@@ -2281,6 +2292,69 @@ mod tests {
         assert_eq!(changed.len(), 1, "sub-pixel circle marker inks exactly one pixel: {}", changed.len());
         let p = changed[0];
         assert_eq!(&small[p * 4..p * 4 + 4], &[0xE0, 0x70, 0x20, 255], "opaque sub-pixel marker is a plain store");
+    }
+
+    /// A collapsed line is styled by its stroke, on both backends: a line layer with a
+    /// transparent fill (the usual styling) must still ink its dot — with the stroke colour —
+    /// not vanish on the CPU or turn the fill colour on either backend. An outline-only
+    /// polygon (transparent fill, visible stroke) keeps its outline colour the same way.
+    #[test]
+    fn collapsed_features_ink_their_visible_colour_on_both_backends() {
+        let view = View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera: Camera::world() };
+        let build = |g: Geometry| {
+            let mut m = Map::new("Map");
+            m.basemap = rustgis_map::Basemap::Blank;
+            m.graticule = false;
+            let gt = match &g {
+                Geometry::Line(_) => GeometryType::Polyline,
+                _ => GeometryType::Polygon,
+            };
+            let mut d = Dataset::new("x", gt, vec![]);
+            d.push(Some(g), vec![]);
+            let id = m.add_dataset(d);
+            if let Some(l) = m.layer_mut(id) {
+                l.renderer = rustgis_map::Renderer::Single(Symbol {
+                    fill: Rgba::rgb(0, 0, 0).with_alpha(0), // transparent: the styling trap
+                    stroke: Rgba::rgb(0xD0, 0x20, 0x20),
+                    stroke_width: 1.0,
+                    size: 0.0,
+                    marker: Marker::Circle,
+                });
+            }
+            m
+        };
+        let tiny_line = Geometry::Line(vec![vec![Coord::new(-0.001, 0.0), Coord::new(0.001, 0.0)]]);
+        let tiny_polygon = Geometry::Polygon(vec![vec![vec![
+            Coord::new(-0.001, -0.001),
+            Coord::new(0.001, -0.001),
+            Coord::new(0.001, 0.001),
+            Coord::new(-0.001, 0.001),
+        ]]]);
+        for (name, g) in [("line", tiny_line), ("polygon", tiny_polygon)] {
+            // CPU: the dot inks a pixel with the stroke colour.
+            let mut m = build(g.clone());
+            let px = match render_backend(&mut m, &view, Backend::Cpu) {
+                Some(RenderOutput::Cpu(r)) => r.pixmap.data().to_vec(),
+                _ => panic!("cpu render"),
+            };
+            let inked = px.chunks_exact(4).any(|p| p == [0xD0, 0x20, 0x20, 255]);
+            assert!(inked, "{name}: collapsed {name} inks its stroke colour on the CPU");
+            // GPU: the collapsed dot instance carries the same (premultiplied) colour.
+            let scene = match render_backend(&mut m, &view, Backend::Gpu) {
+                Some(RenderOutput::Gpu(s)) => s,
+                _ => panic!("gpu scene"),
+            };
+            let mut dot_colours = scene
+                .cmds
+                .iter()
+                .filter_map(|c| match c {
+                    gpu_scene::DrawCmd::Points { instances, .. } => Some(instances),
+                    _ => None,
+                })
+                .flatten()
+                .map(|i| i.color);
+            assert!(dot_colours.any(|c| c[0] >= 0.7 && c[3] >= 0.7), "{name}: the GPU dot instance carries the stroke colour");
+        }
     }
 
     #[test]
