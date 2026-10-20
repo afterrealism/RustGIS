@@ -159,9 +159,10 @@ pub struct MapView {
     /// The split map's offscreen MSAA target (its own slot — main and split differ in size).
     pub(crate) gpu_target_split: std::sync::Arc<std::sync::Mutex<Option<crate::mapgpu::SceneTarget>>>,
     pub(crate) render_state: Option<egui_wgpu::RenderState>,
-    /// The GPU map backend: on when the saved `ui.map.gpu` preference says so, or the
-    /// RUSTGIS_GPU environment variable forces it on (see `lib.rs`); the ribbon, the status
-    /// bar and its command toggle it.
+    /// The GPU map backend: on by default; disabled by setting `ui.map.gpu` to `"0"` in
+    /// preferences or `RUSTGIS_GPU=0` in the environment. The ribbon, status bar and its
+    /// command toggle it at runtime. Declined frames (globe, effects, blended layers,
+    /// oversized scenes) fall back to the CPU renderer automatically.
     pub gpu_enabled: bool,
     /// Rolling map-frame timestamps (for the status-bar FPS readout).
     frame_times: std::collections::VecDeque<f64>,

@@ -515,9 +515,9 @@ impl RustGisApp {
             self.ui.start_projection = p.code();
         }
         self.ui.start_extent = self.services.load_pref.as_ref().and_then(|load| load("start_extent")).and_then(|v| parse_extent(&v));
-        // The GPU map backend: RUSTGIS_GPU forces it on, else the saved preference.
-        self.map.gpu_enabled = std::env::var_os("RUSTGIS_GPU").is_some()
-            || self.services.load_pref.as_ref().and_then(|load| load("ui.map.gpu")).as_deref() == Some("1");
+        // The GPU map backend: on by default; RUSTGIS_GPU=0 or pref ui.map.gpu=0 disables it.
+        self.map.gpu_enabled = !std::env::var_os("RUSTGIS_GPU").is_some_and(|v| v == "0")
+            && self.services.load_pref.as_ref().and_then(|load| load("ui.map.gpu")).as_deref() != Some("0");
         if let Some(m) = self.services.load_pref.as_ref().and_then(|load| load("ribbon_minimized")) {
             self.ui.ribbon_minimized = m == "true";
         }
