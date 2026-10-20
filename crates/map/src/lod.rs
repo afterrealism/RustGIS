@@ -22,8 +22,10 @@ pub const THIN_ABOVE: usize = 200_000;
 /// it draws from the full geometry (zoomed in past the vertex spacing, or many tiny features).
 pub const MIN_SAVING: f64 = 0.25;
 
-/// How many levels a layer keeps.
-pub const LEVELS_KEPT: usize = 3;
+/// How many thinned levels a layer keeps in memory. More levels reduce VW rebuild
+/// frequency when zooming between interaction and settle tolerances; each level costs
+/// roughly the original vertex count in memory (Arc-shared, so clones are cheap).
+pub const LEVELS_KEPT: usize = 5;
 
 /// The level for a tolerance in projection units: the largest whose tolerance (2^level) is at
 /// most `tol`. `None` for a tolerance that is not a positive number.
