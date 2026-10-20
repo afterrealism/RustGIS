@@ -452,10 +452,40 @@ impl Layer {
                     levels.truncate(lod::LEVELS_KEPT);
                     return &self.projected;
                 }
-                let copy: Vec<Option<Geometry>> = self.projected.iter().map(|g| g.as_ref().map(|g| lod::thin(g, t))).collect();
+                let copy: Vec<Option<Geometry>> = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        use rayon::prelude::*;
+                        self.projected.par_iter().map(|g| g.as_ref().map(|g| lod::thin(g, t))).collect()
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        self.projected.iter().map(|g| g.as_ref().map(|g| lod::thin(g, t))).collect()
+                    }
+                };
                 // The saving counts against every vertex the copy holds, points included.
-                let all: usize = self.projected.iter().flatten().map(lod::vertices).sum();
-                let kept: usize = copy.iter().flatten().map(lod::vertices).sum();
+                let all: usize = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        use rayon::prelude::*;
+                        self.projected.par_iter().flatten().map(lod::vertices).sum()
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        self.projected.iter().flatten().map(lod::vertices).sum()
+                    }
+                };
+                let kept: usize = {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        use rayon::prelude::*;
+                        copy.par_iter().flatten().map(lod::vertices).sum()
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        copy.iter().flatten().map(lod::vertices).sum()
+                    }
+                };
                 let worth = (kept as f64) <= all as f64 * (1.0 - lod::MIN_SAVING);
                 levels.insert(0, (level, worth.then(|| std::sync::Arc::new(copy))));
                 levels.truncate(lod::LEVELS_KEPT);

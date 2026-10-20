@@ -4168,6 +4168,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "proj4rs",
+ "rayon",
  "roxmltree",
  "rustgis-data",
  "rustgis-geom",
