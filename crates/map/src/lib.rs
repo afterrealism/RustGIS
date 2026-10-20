@@ -172,6 +172,12 @@ pub struct Layer {
     /// Bumped whenever geometry changes so caches rebuild.
     #[serde(default)]
     pub geometry_rev: u64,
+    /// Reusable buffer for `drawn_rows`, avoiding per-call allocation.
+    #[serde(skip)]
+    drawn_rows_buf: std::cell::RefCell<Vec<bool>>,
+    /// Reusable buffer for `visible_rows`, avoiding per-call allocation.
+    #[serde(skip)]
+    visible_rows_buf: std::cell::RefCell<Vec<bool>>,
 }
 
 fn yes() -> bool {
@@ -213,6 +219,8 @@ impl Layer {
             projected_rev: u64::MAX,
             projected_for: String::new(),
             geometry_rev: 0,
+            drawn_rows_buf: std::cell::RefCell::new(Vec::new()),
+            visible_rows_buf: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -512,15 +520,36 @@ impl Layer {
     /// Rows drawn at a scale denominator: those passing the definition query and every display
     /// filter that applies at that scale (a filter that no longer reads is skipped).
     pub fn drawn_rows(&self, scale: f64) -> Vec<bool> {
-        let mut rows = self.visible_rows();
+        let n = self.dataset.features.len();
+        let mut buf = self.drawn_rows_buf.borrow_mut();
+        buf.resize(n, true);
+        // Populate with visible_rows inline to avoid a second allocation.
+        if let Some(q) = self.definition_query.as_deref().filter(|q| !q.trim().is_empty()) {
+            match rustgis_data::query::parse(q, &self.dataset) {
+                Ok(e) => {
+                    for (r, v) in buf.iter_mut().enumerate() {
+                        *v = rustgis_data::query::eval(&e, &self.dataset, r);
+                    }
+                }
+                Err(_) => {
+                    for v in buf.iter_mut() {
+                        *v = true;
+                    }
+                }
+            }
+        } else {
+            for v in buf.iter_mut() {
+                *v = true;
+            }
+        }
         for f in self.display_filters.iter().filter(|f| f.applies(scale)) {
             if let Ok(e) = rustgis_data::query::parse(&f.where_, &self.dataset) {
-                for (r, keep) in rows.iter_mut().enumerate() {
+                for (r, keep) in buf.iter_mut().enumerate() {
                     *keep = *keep && rustgis_data::query::eval(&e, &self.dataset, r);
                 }
             }
         }
-        rows
+        buf.clone()
     }
 
     /// The legend rows for what this layer draws at a scale denominator (#207): the classes of the
@@ -542,13 +571,19 @@ impl Layer {
     /// Rows passing the definition query (all rows when none or invalid).
     pub fn visible_rows(&self) -> Vec<bool> {
         let n = self.dataset.features.len();
-        match self.definition_query.as_deref().filter(|q| !q.trim().is_empty()) {
-            Some(q) => match rustgis_data::query::parse(q, &self.dataset) {
-                Ok(e) => (0..n).map(|r| rustgis_data::query::eval(&e, &self.dataset, r)).collect(),
-                Err(_) => vec![true; n],
-            },
-            None => vec![true; n],
+        let mut buf = self.visible_rows_buf.borrow_mut();
+        buf.resize(n, true);
+        for v in buf.iter_mut() {
+            *v = true;
         }
+        if let Some(q) = self.definition_query.as_deref().filter(|q| !q.trim().is_empty())
+            && let Ok(e) = rustgis_data::query::parse(q, &self.dataset)
+        {
+            for (r, v) in buf.iter_mut().enumerate() {
+                *v = rustgis_data::query::eval(&e, &self.dataset, r);
+            }
+        }
+        buf.clone()
     }
 
     /// Extent in longitude/latitude.
