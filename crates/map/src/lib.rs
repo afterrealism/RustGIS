@@ -437,6 +437,21 @@ impl Layer {
             }
             None => {
                 let t = lod::tolerance(level);
+                // Pre-check: sample a subset to estimate if thinning is worth the full cost.
+                // If the sample saves less than MIN_SAVING, skip the full build entirely.
+                let sample_size = 1000.min(self.projected.len());
+                let mut sample_all = 0usize;
+                let mut sample_kept = 0usize;
+                for g in self.projected.iter().take(sample_size).flatten() {
+                    sample_all += lod::vertices(g);
+                    sample_kept += lod::vertices(&lod::thin(g, t));
+                }
+                let should_thin = sample_all == 0 || (sample_kept as f64) <= sample_all as f64 * (1.0 - lod::MIN_SAVING);
+                if !should_thin {
+                    levels.insert(0, (level, None));
+                    levels.truncate(lod::LEVELS_KEPT);
+                    return &self.projected;
+                }
                 let copy: Vec<Option<Geometry>> = self.projected.iter().map(|g| g.as_ref().map(|g| lod::thin(g, t))).collect();
                 // The saving counts against every vertex the copy holds, points included.
                 let all: usize = self.projected.iter().flatten().map(lod::vertices).sum();
