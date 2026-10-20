@@ -181,3 +181,104 @@ fn bench_worker_clone_cache_loss() {
         println!("original settle {round}: {:.1} ms", t0.elapsed().as_secs_f64() * 1000.0);
     }
 }
+
+/// Phase-level breakdown of a settle frame: where does the 300 ms go?
+/// Run: cargo test -p rustgis-render --test lod_bench --release -- --ignored --nocapture bench_settle_phases
+#[test]
+#[ignore]
+fn bench_settle_phases() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    use rustgis_map::Map;
+    use rustgis_render::{Backend, RenderOutput, render_backend_lod};
+
+    // Build Amsterdam-scale dataset: ~3.5M features across 3 layers (points, lines, polygons)
+    // using push_next for O(n) construction.
+    eprintln!("Building fixture...");
+    let t0 = web_time::Instant::now();
+
+    let mut pts = Dataset::new("points", GeometryType::Point, vec![]);
+    for i in 0..1_700_000 {
+        let x = (i as f64 * 360.0 / 1_700_000.0) - 180.0;
+        let y = ((i as f64 * 0.618) % 170.0) - 85.0;
+        pts.push_next(Some(Geometry::Point(Coord::new(x, y))), vec![]);
+    }
+
+    let mut lines = Dataset::new("lines", GeometryType::Polyline, vec![]);
+    for i in 0..400_000 {
+        let x0 = (i as f64 * 360.0 / 400_000.0) - 180.0;
+        let run = (0..10).map(|v| Coord::new(x0 + v as f64 * 0.001, (i % 90) as f64)).collect();
+        lines.push_next(Some(Geometry::Line(vec![run])), vec![]);
+    }
+
+    let mut polys = Dataset::new("polys", GeometryType::Polygon, vec![]);
+    for i in 0..1_400_000 {
+        let x = (i as f64 * 360.0 / 1_400_000.0) - 180.0;
+        let y = ((i as f64 * 0.382) % 170.0) - 85.0;
+        let s = 0.002;
+        polys.push_next(
+            Some(Geometry::Polygon(vec![vec![vec![
+                Coord::new(x, y),
+                Coord::new(x + s, y),
+                Coord::new(x + s, y + s),
+                Coord::new(x, y + s),
+            ]]])),
+            vec![],
+        );
+    }
+
+    let mut m = Map::new("profile");
+    m.add_dataset(pts);
+    m.add_dataset(lines);
+    m.add_dataset(polys);
+    eprintln!("Fixture built in {:.1} ms", t0.elapsed().as_secs_f64() * 1000.0);
+
+    let view = View { width: 1280.0, height: 800.0, pixels_per_point: 1.0, camera: Camera::world() };
+
+    // Warm: first render builds projection + VW + cull caches
+    eprintln!("Warming caches...");
+    let _ = render_backend_lod(&mut m, &view, Backend::Cpu, 1.0);
+
+    // Measure settled CPU frame phases by instrumenting render_with_backend internals.
+    // Since we can't easily add per-phase timing inside the fn, measure total CPU settle
+    // and compare with GPU settle to isolate tessellation vs rasterization cost.
+    const FRAMES: usize = 5;
+
+    eprintln!("\nCPU settle frames:");
+    for i in 0..FRAMES {
+        let t = web_time::Instant::now();
+        let out = render_backend_lod(&mut m, &view, Backend::Cpu, 1.0);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let dots = match &out {
+            Some(RenderOutput::Cpu(r)) => format!("{}x{}", r.pixmap.width(), r.pixmap.height()),
+            _ => "none".into(),
+        };
+        eprintln!("  frame {}: {:.1} ms ({})", i, ms, dots);
+    }
+
+    eprintln!("\nGPU settle frames:");
+    for i in 0..FRAMES {
+        let t = web_time::Instant::now();
+        let out = render_backend_lod(&mut m, &view, Backend::Gpu, 1.0);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let tris = match &out {
+            Some(RenderOutput::Gpu(scene)) => scene
+                .cmds
+                .iter()
+                .map(|c| match c {
+                    rustgis_render::gpu_scene::DrawCmd::Mesh { indices, .. } => indices.len() / 3,
+                    _ => 0,
+                })
+                .sum::<usize>(),
+            _ => 0,
+        };
+        eprintln!("  frame {}: {:.1} ms ({} triangles)", i, ms, tris);
+    }
+
+    // Biased (interaction) frames for comparison
+    eprintln!("\nCPU biased (4x) frames:");
+    for i in 0..FRAMES {
+        let t = web_time::Instant::now();
+        let _ = render_backend_lod(&mut m, &view, Backend::Cpu, 4.0);
+        eprintln!("  frame {}: {:.1} ms", i, t.elapsed().as_secs_f64() * 1000.0);
+    }
+}

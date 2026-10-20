@@ -87,6 +87,23 @@ impl Basemap {
     }
 }
 
+/// A reusable buffer behind `Mutex`: clones as a fresh empty buffer (the clone's caller
+/// fills it before use, so carrying stale data across a clone is harmless).
+#[derive(Debug)]
+struct SharedBuf(std::sync::Mutex<Vec<bool>>);
+
+impl Clone for SharedBuf {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+}
+
+impl Default for SharedBuf {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+}
+
 /// A layer: a dataset drawn with a renderer and labels.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Layer {
@@ -174,10 +191,10 @@ pub struct Layer {
     pub geometry_rev: u64,
     /// Reusable buffer for `drawn_rows`, avoiding per-call allocation.
     #[serde(skip)]
-    drawn_rows_buf: std::cell::RefCell<Vec<bool>>,
+    drawn_rows_buf: SharedBuf,
     /// Reusable buffer for `visible_rows`, avoiding per-call allocation.
     #[serde(skip)]
-    visible_rows_buf: std::cell::RefCell<Vec<bool>>,
+    visible_rows_buf: SharedBuf,
 }
 
 fn yes() -> bool {
@@ -219,8 +236,8 @@ impl Layer {
             projected_rev: u64::MAX,
             projected_for: String::new(),
             geometry_rev: 0,
-            drawn_rows_buf: std::cell::RefCell::new(Vec::new()),
-            visible_rows_buf: std::cell::RefCell::new(Vec::new()),
+            drawn_rows_buf: SharedBuf::default(),
+            visible_rows_buf: SharedBuf::default(),
         }
     }
 
@@ -521,7 +538,7 @@ impl Layer {
     /// filter that applies at that scale (a filter that no longer reads is skipped).
     pub fn drawn_rows(&self, scale: f64) -> Vec<bool> {
         let n = self.dataset.features.len();
-        let mut buf = self.drawn_rows_buf.borrow_mut();
+        let Ok(mut buf) = self.drawn_rows_buf.0.lock() else { return vec![true; n] };
         buf.resize(n, true);
         // Populate with visible_rows inline to avoid a second allocation.
         if let Some(q) = self.definition_query.as_deref().filter(|q| !q.trim().is_empty()) {
@@ -571,7 +588,7 @@ impl Layer {
     /// Rows passing the definition query (all rows when none or invalid).
     pub fn visible_rows(&self) -> Vec<bool> {
         let n = self.dataset.features.len();
-        let mut buf = self.visible_rows_buf.borrow_mut();
+        let Ok(mut buf) = self.visible_rows_buf.0.lock() else { return vec![true; n] };
         buf.resize(n, true);
         for v in buf.iter_mut() {
             *v = true;
